@@ -77,15 +77,62 @@ class Scene:
     object_qadr: list[int]
     kp_arm: np.ndarray
     table_top_z: float
+    # Collision masks exactly as compiled. Sequential-spawn stowing zeroes these
+    # in place, so the pristine values must be captured at build time -- reading
+    # them off a model an env has already stowed into returns zeros.
+    contype0: np.ndarray = None
+    conaff0: np.ndarray = None
 
     @property
     def n_objects(self) -> int:
         return len(self.object_bodies)
 
 
-def build_scene(scene: str = "pick_place", root: str | Path | None = None,
-                objects: list[dict] | None = None) -> Scene:
-    """Compile the scene the way the source repo does."""
+# The scene the ICRA benchmark demonstrations were actually recorded in.
+#
+# Recovered from the runs' own logged obj_qpos, not from models/scene_objects.json
+# (which holds only the current one-gelatin-box config). Every ICRA run is:
+#
+#   * the RoboCasa counter scene, counter top at z = 0.86 -- NOT the pick_place
+#     table at 0.625;
+#   * four YCB objects with THREE stowed below the floor at z = -5, i.e.
+#     --sequential-spawn: exactly one object is on the counter at a time;
+#   * that one object presented at [-0.35, 0.35], the same point regardless of
+#     which object it is, so initial conditions are identical across objects
+#     and across runs. NOTE this is NOT the source's SEQ_SPAWN_XY constant
+#     ([-0.20, 0.45]): the ICRA runs predate or override it. The value here is
+#     measured from the runs themselves -- the active object's world position at
+#     trial_start, median over all 52 ICRA trials, is [-0.350, 0.350, 0.860] for
+#     every one of the four objects, with zero spread on three of them.
+#   * presentation order counterbalanced by a cyclic Latin square, which
+#     matters for the human study but not for a policy.
+#
+ICRA_OBJECTS = ("036_wood_block", "009_gelatin_box", "017_orange", "025_mug")
+SEQ_SPAWN_XY = (-0.35, 0.35)
+STOW_Z = -5.0
+
+
+def icra_layout(objects: tuple[str, ...] = ICRA_OBJECTS) -> list[dict]:
+    """Object config for the ICRA RoboCasa scene.
+
+    All four are attached at the shared spawn point; `PickPlaceEnv` then stows
+    every one but the active object, mirroring the source's sequential spawn.
+    """
+    return [{"id": oid, "xy": list(SEQ_SPAWN_XY)} for oid in objects]
+
+
+def build_scene(scene: str = "robocasa", root: str | Path | None = None,
+                objects: list[dict] | None = None,
+                icra: bool = True) -> Scene:
+    """Compile the scene the way the source repo does.
+
+    Defaults to the ICRA benchmark configuration (RoboCasa counter, the four
+    YCB objects), since that is what the demonstrations were recorded in.
+    Pass `icra=False` to use the source repo's current scene_objects.json, or
+    `objects=` to specify a layout outright.
+    """
+    if objects is None and icra:
+        objects = icra_layout()
     import mujoco as mj
 
     rt = handcontrol_root(root)
@@ -160,7 +207,9 @@ def build_scene(scene: str = "pick_place", root: str | Path | None = None,
 
     return Scene(model=model, data=data, palm_bid=int(palm_bid),
                  object_bodies=obj_bodies, object_qadr=obj_qadr,
-                 kp_arm=kp_arm, table_top_z=top_z)
+                 kp_arm=kp_arm, table_top_z=top_z,
+                 contype0=model.geom_contype.copy(),
+                 conaff0=model.geom_conaffinity.copy())
 
 
 def home_qpos() -> np.ndarray:

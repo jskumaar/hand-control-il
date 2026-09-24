@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..data.schema import N_ARM, N_ROBOT, OBS_DIM
-from .scene import Scene, build_scene, home_qpos
+from .scene import (SEQ_SPAWN_XY, STOW_Z, Scene, build_scene, home_qpos)
 
 QVEL_ARM_MAX = 4.0        # rad/s, matches the source safety clamp
 
@@ -57,7 +57,8 @@ class PickPlaceEnv:
 
     def __init__(self, scene: Scene | None = None, kp_hand: float = 2.0,
                  control_hz: float = 42.0, velocity_injection: bool = False,
-                 scene_name: str = "pick_place", root=None):
+                 scene_name: str = "robocasa", root=None,
+                 active_object: int | str = 0, sequential: bool = True):
         import mujoco as mj
         self.mj = mj
         self.scene = scene if scene is not None else build_scene(scene_name, root=root)
@@ -69,10 +70,43 @@ class PickPlaceEnv:
         # Demos are logged at ~42 Hz wall; the policy runs at that rate and each
         # control step is held for the matching number of 2 ms physics steps.
         self.n_substeps = max(1, int(round((1.0 / control_hz) / self.model.opt.timestep)))
+        # Collision masks as compiled, captured by build_scene before any env
+        # stowed into this model. A Scene can be shared between env instances, so
+        # restore them here instead of reading the (possibly zeroed) live values.
+        self._contype0 = np.asarray(self.scene.contype0).copy()
+        self._conaff0 = np.asarray(self.scene.conaff0).copy()
+        self.model.geom_contype[:] = self._contype0
+        self.model.geom_conaffinity[:] = self._conaff0
+
         self._bowl = self._bowl_geometry()
         self._obj_col_gids = self._object_geoms()
         self._in_bowl_t: dict[int, float] = {}
+        self.sequential = sequential
+        self._col0 = {i: [(g, int(self._contype0[g]),
+                           int(self._conaff0[g]))
+                          for g in gids]
+                      for i, gids in self._obj_col_gids.items()}
+        self.set_active_object(active_object)
         self.reset()
+
+    def set_active_object(self, which: int | str) -> int:
+        """Choose which object is presented; the rest are stowed.
+
+        Accepts an index or a body name ('obj_025_mug') or a YCB id fragment
+        ('025_mug'), since episode metadata names objects, not indices.
+        """
+        names = self.scene.object_bodies
+        if isinstance(which, str):
+            match = [i for i, n in enumerate(names) if n == which]
+            if not match:
+                match = [i for i, n in enumerate(names) if which.lstrip("obj_") in n]
+            if not match:
+                raise KeyError(f"no object matching {which!r} in {names}")
+            which = match[0]
+        if not 0 <= which < len(names):
+            raise IndexError(f"object index {which} out of range for {names}")
+        self.active_object = int(which)
+        return self.active_object
 
     # -- scene queries ----------------------------------------------------
     def _bowl_geometry(self):
@@ -91,12 +125,19 @@ class PickPlaceEnv:
                 "base_gid": base, "gids": gids}
 
     def _object_geoms(self) -> dict[int, list[int]]:
-        """Collision geoms per object; YCB meshes are multi-hull (mug = 43)."""
+        """Collision geoms per object; YCB meshes are multi-hull (mug = 43).
+
+        Built from a snapshot of the AS-COMPILED contype taken before any
+        stowing, since stowing zeroes contype -- reading it live would return an
+        empty geom list for every stowed object.
+        """
+        if not hasattr(self, "_contype0"):
+            self._contype0 = self.model.geom_contype.copy()
         out = {}
         for i, name in enumerate(self.scene.object_bodies):
             bid = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_BODY, name)
             gl = [g for g in range(self.model.ngeom)
-                  if self.model.geom_bodyid[g] == bid and self.model.geom_contype[g] != 0]
+                  if self.model.geom_bodyid[g] == bid and self._contype0[g] != 0]
             out[i] = gl
         return out
 
@@ -161,6 +202,37 @@ class PickPlaceEnv:
         return False
 
     # -- env API ----------------------------------------------------------
+    def _park(self, i: int):
+        """Hold object i's freejoint at its stow pose with zero velocity."""
+        qa = self.scene.object_qadr[i]
+        self.data.qpos[qa:qa + 3] = [0.3 * i, 0.0, STOW_Z]
+        self.data.qpos[qa + 3:qa + 7] = [1.0, 0.0, 0.0, 0.0]
+        bid = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_BODY,
+                                 self.scene.object_bodies[i])
+        dadr = int(self.model.jnt_dofadr[self.model.body_jntadr[bid]])
+        self.data.qvel[dadr:dadr + 6] = 0.0
+
+    def _stow(self, i: int):
+        """Park object i below the floor with collision OFF.
+
+        Collision must be disabled first: the source repo documents that a
+        still-colliding body parked at z=-5 makes MuJoCo see a multi-metre floor
+        interpenetration and fling the whole scene (observed |qvel| ~ 4400).
+        """
+        for g, _, _ in self._col0[i]:
+            self.model.geom_contype[g] = 0
+            self.model.geom_conaffinity[g] = 0
+        self._park(i)
+
+    def _activate(self, i: int):
+        """Restore object i's collision and place it at the shared spawn point."""
+        for g, ct, ca in self._col0[i]:
+            self.model.geom_contype[g] = ct
+            self.model.geom_conaffinity[g] = ca
+        qa = self.scene.object_qadr[i]
+        self.data.qpos[qa:qa + 2] = SEQ_SPAWN_XY
+        self.data.qpos[qa + 3:qa + 7] = [1.0, 0.0, 0.0, 0.0]
+
     def reset(self) -> np.ndarray:
         mj = self.mj
         mj.mj_resetData(self.model, self.data)
@@ -169,6 +241,16 @@ class PickPlaceEnv:
         self.data.qacc[:] = 0.0
         self.data.qfrc_applied[:] = 0.0
         self.data.qacc_warmstart[:] = 0.0
+
+        if self.sequential:
+            for i in range(len(self.scene.object_bodies)):
+                if i != self.active_object:
+                    self._stow(i)
+            self._activate(self.active_object)
+            mj.mj_forward(self.model, self.data)
+            # Drop the active object onto the counter, as place_on_surface does.
+            self._settle_active()
+
         mj.mj_forward(self.model, self.data)
         self._in_bowl_t.clear()
         self._rest_z = [float(self.data.xpos[
@@ -177,8 +259,47 @@ class PickPlaceEnv:
         self._target = self.data.qpos[:N_ROBOT].copy()
         return self.observe()
 
-    def observe(self, obj_idx: int = 0) -> np.ndarray:
-        """Pack the same 68-d observation the dataset uses."""
+    def _settle_active(self, steps: int = 250):
+        """Rest the active object on the counter surface.
+
+        The source's `place_on_surface` works off the compiled spawn pose; here
+        the object has just been teleported, so it is instead dropped from a few
+        centimetres and allowed to settle under gravity with the robot frozen.
+        Cheaper than computing a mesh AABB per object, and it handles the mug's
+        43 collision hulls without special-casing.
+        """
+        import mujoco as mj
+
+        i = self.active_object
+        qa = self.scene.object_qadr[i]
+        self.data.qpos[qa + 2] = self.scene.table_top_z + 0.05
+        mj.mj_forward(self.model, self.data)
+
+        hold = self.data.qpos[:N_ROBOT].copy()
+        stowed = [j for j in range(len(self.scene.object_bodies)) if j != i]
+        for _ in range(steps):
+            self.data.qfrc_applied[:] = 0.0
+            self.data.qpos[:N_ROBOT] = hold      # pin the robot while it settles
+            self.data.qvel[:N_ROBOT] = 0.0
+            # Stowed objects have collision off, so gravity would walk them
+            # steadily downwards over every reset; re-park them each step.
+            for j in stowed:
+                self._park(j)
+            mj.mj_step(self.model, self.data)
+        self.data.qvel[:] = 0.0
+        self.data.qacc_warmstart[:] = 0.0
+        self.data.time = 0.0
+        mj.mj_forward(self.model, self.data)
+
+    def observe(self, obj_idx: int | None = None) -> np.ndarray:
+        """Pack the same 68-d observation the dataset uses.
+
+        Defaults to the ACTIVE object. Defaulting to index 0 instead would
+        silently measure against a stowed object parked below the floor,
+        producing |obj_in_palm| ~ 6 m and a policy input the demos never show.
+        """
+        if obj_idx is None:
+            obj_idx = self.active_object
         mj = self.mj
         d, m = self.data, self.model
         q = d.qpos[:N_ROBOT].copy()
@@ -231,7 +352,11 @@ class PickPlaceEnv:
         np.clip(self._target, self.model.jnt_range[:N_ROBOT, 0],
                 self.model.jnt_range[:N_ROBOT, 1], out=self._target)
         tau = np.zeros(self.model.nv)
+        stowed = ([j for j in range(len(self.scene.object_bodies))
+                   if j != self.active_object] if self.sequential else [])
         for _ in range(self.n_substeps):
+            for j in stowed:          # collision is off, so gravity would drift them
+                self._park(j)
             if self.velocity_injection:
                 self.data.qvel[:N_ARM] = np.clip(
                     self.data.qvel[:N_ARM], -QVEL_ARM_MAX, QVEL_ARM_MAX)
@@ -245,12 +370,16 @@ class PickPlaceEnv:
             self.mj.mj_step(self.model, self.data)
         return self.observe()
 
-    def object_height_above_rest(self, i: int = 0) -> float:
+    def object_height_above_rest(self, i: int | None = None) -> float:
+        if i is None:
+            i = self.active_object
         bid = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_BODY,
                                  self.scene.object_bodies[i])
         return float(self.data.xpos[bid][2]) - self._rest_z[i]
 
-    def object_speed(self, i: int = 0) -> float:
+    def object_speed(self, i: int | None = None) -> float:
+        if i is None:
+            i = self.active_object
         qadr = self.scene.object_qadr[i]
         bid = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_BODY,
                                  self.scene.object_bodies[i])
@@ -260,9 +389,11 @@ class PickPlaceEnv:
 
 
 def rollout(env: PickPlaceEnv, policy, max_steps: int = 600,
-            obj_idx: int = 0, record: bool = False) -> RolloutResult:
+            obj_idx: int | None = None, record: bool = False) -> RolloutResult:
     """Run one episode and score it with the source repo's criteria."""
     obs = env.reset()
+    if obj_idx is None:
+        obj_idx = env.active_object
     obs_log, act_log = [], []
     dwell_t0 = drop_t0 = arrive_t0 = None
     picked = False

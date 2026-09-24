@@ -20,20 +20,23 @@ Kinova Gen3 (7 DOF) + LEAP hand (16 DOF) = 23 DOF, MuJoCo, 500 Hz physics.
 uv sync --extra dev                       # torch, mujoco, pytest
 export HANDCONTROL_ROOT=~/sureshkj/hand-control
 
-# 1. Build the episode dataset from the raw run logs (~2 min)
+# 1. Build the episode dataset from the ICRA benchmark runs
 uv run python scripts/extract_data.py \
-    --logs $HANDCONTROL_ROOT/logs --out data/episodes --outcomes success
+    --logs $HANDCONTROL_ROOT/logs/ICRA_experiments --out data/icra --outcomes success
+
+# 1b. Calibrate: replay the demos themselves to get the env's ceiling
+uv run python scripts/replay_demos.py --data data/icra --limit 20
 
 # 2. Train one policy on one collection method
-uv run python scripts/train_policy.py \
-    --algo bc_rnn --retargeter anyteleop --pipeline contact_aware \
-    --epochs 100 --out runs/ca_anyteleop_bcrnn
+uv run python scripts/train_policy.py --data data/icra \
+    --algo bc_rnn --retargeter anyteleop --pipeline baseline \
+    --epochs 100 --out runs/base_anyteleop_bcrnn
 
 # 3. Score it closed-loop in the real MuJoCo scene
-uv run python scripts/evaluate_policy.py --run runs/ca_anyteleop_bcrnn --episodes 20
+uv run python scripts/evaluate_policy.py --run runs/base_anyteleop_bcrnn --episodes 20
 
 # 4. Or run the whole comparison matrix (methods x algorithms)
-uv run python scripts/run_comparison.py --algos bc_mlp bc_rnn act --episodes 20
+uv run python scripts/run_comparison.py --data data/icra --algos bc_mlp bc_rnn act --episodes 20
 ```
 
 The source repo is **read-only** to this one: its `logs/`, `models/` and YCB
@@ -41,11 +44,29 @@ assets are referenced by path, never copied, so the scene stays single-sourced.
 
 ---
 
-## The two hard parts
+## Scope: the ICRA benchmark runs
+
+The work targets `logs/ICRA_*`, which is the clean, counterbalanced benchmark:
+the **RoboCasa counter scene** (counter top `z = 0.86`), four YCB objects under
+**sequential spawn** — exactly one object on the counter at a time, the other
+three parked below the floor — each presented at the same point `[-0.35, 0.35]`
+so initial conditions are identical across objects and runs, in a cyclic Latin
+order. 35 runs, 4 collection methods.
+
+Everything about that scene was measured from the runs themselves rather than
+read off the source's constants, and two of those constants would have been
+wrong: the ICRA runs use the RoboCasa counter, **not** the `pick_place` table at
+`z = 0.625`, and they spawn at `[-0.35, 0.35]`, **not** the source's
+`SEQ_SPAWN_XY = [-0.20, 0.45]`. Building the wrong one puts the object 18 cm
+from where every demonstration reaches, and nothing then works.
+
+---
+
+## The three hard parts
 
 Most of the engineering here is in making the source data learnable at all.
-Both problems below were found by validating against the real archive, and
-both are easy to get silently wrong.
+All three problems below were found by validating against the real archive, and
+all three are easy to get silently wrong.
 
 ### 1. Actions are not logged
 
@@ -83,7 +104,30 @@ targets (up to 20 rad, versus 0.017 rad during `REACH`). Those rows have their
 reports `grasp_repair_frac` per episode — currently ~26% of rows across 120 of
 235 episodes.
 
-### 2. The method label is lossy
+### 2. The palm-frame object pose has to be recomputed
+
+`obj_in_palm` is the most task-relevant signal the policy gets — where the
+object sits relative to the hand — and the logged column is **all-NaN in 41 of
+44 ICRA episodes**, because the source only fills it for the proximate object
+while a trial is live.
+
+It is fully recoverable: `xpos`/`xquat` (palm) and `obj_qpos` (object
+freejoints) are both logged, so
+
+```
+p_palm_frame = R_palmᵀ (p_obj − p_palm)      R_rel = R_palmᵀ R_obj
+```
+
+Validated against the rows where the source *did* log it: agreement to
+**1e-5 m over ~11k rows**, the residual being float32 storage precision.
+
+Picking *which* object is the active one matters here. Stowed objects are
+parked at `z = -5` with collision off, and nothing holds them there, so they
+free-fall for the rest of the run — real traces reach `z = -360`. The active
+object is the one that stays above the floor, tested by row count rather than
+by a median (a median over a falling object is meaningless).
+
+### 3. The method label is lossy
 
 Identifying which collection method produced a trial needs **both** available
 labels, because neither is correct alone:
@@ -103,18 +147,21 @@ conflict. Group with `Method.key` (`contact_aware+anyteleop@s0p4`) or
 
 ## What's in the dataset
 
-235 successful episodes from 195 runs (the extractor reads all of them; none
-fail, and no episode needs the `next_qpos` action fallback).
+44 successful episodes from the 15 `ICRA_experiments` runs, with no episode
+needing the `next_qpos` action fallback:
 
 | Collection method | Episodes | Steps |
 |---|---:|---:|
-| `contact_aware+vwj` | 38 | 29,643 |
-| `baseline+dexpilot` | 38 | 71,919 |
-| `contact_aware+anyteleop` | 23 | 24,117 |
 | `baseline+anyteleop` | 16 | 19,758 |
 | `baseline+vwj` | 13 | 17,421 |
-| `contact_aware+dexpilot` | 6 | 3,998 |
-| *(+ solref ablations `@s0p4/6/8`)* | 85 | 110,972 |
+| `contact_aware+vwj` | 9 | 6,961 |
+| `contact_aware+anyteleop` | 3 | 2,316 |
+| `baseline+dexpilot` | 3 | 6,632 |
+
+Pointing `--logs` at the whole `logs/` tree instead yields 235 episodes across
+195 runs and 13 method cells, but those mix scenes, object counts and table
+heights, so they are not directly comparable. `logs/ICRA_ablations` adds 20 more
+runs of the same scene under a solref stiffness sweep (`@s0p4/6/8`).
 
 Filter on outcome: roughly half of all recorded trials are `abandoned`
 (the operator switched target mid-attempt), and those are partial
@@ -151,15 +198,35 @@ Policies are scored by **closed-loop rollout in the real scene**, not by
 validation loss — offline BC loss correlates poorly with task success.
 
 `handil/envs/` rebuilds the scene the way the source does (MjSpec surgery,
-`base_link` re-posed onto the table and yawed 90°, hand self-collision off, YCB
-objects attached from `scene_objects.json` and dropped onto the table), then
+`base_link` re-posed onto the counter and yawed 90°, hand self-collision off,
+YCB objects attached and settled under gravity, the inactive three stowed), then
 applies the same P-torque control with no torque clamping. The recovered arm
-gains match the source exactly: `[509.3, 675.5, 254.3, 324.0, 65.9, 65.0, 3.1]`.
+gains match the source exactly: `[509.3, 675.5, 254.3, 324.0, 65.9, 65.0, 3.1]`,
+verified identical under MuJoCo 3.6 and 3.14.
 
 Success uses the source's own criteria from `trial_logger.py`: a lift of 1 cm
 held for 1 s to confirm a pick, then contact-based containment in the bin
 (contact with `bowl_base`, walls excluded, 0.2 s flicker latch) while settled
 and released for 0.5 s.
+
+### Calibrate before you trust a policy score
+
+`scripts/replay_demos.py` drives the env with the **demonstrated** actions and
+scores the result. That is the ceiling for any learned policy here, and it
+separates "the policy is weak" from "the env is wrong" — a distinction that is
+otherwise very easy to misread.
+
+On the first 20 ICRA episodes it currently reaches **25% pick / 5% success**.
+That is the honest ceiling, and it is well below 100% for a structural reason:
+replay is open-loop, so a 40-second contact-rich manipulation accumulates
+tracking error with no feedback to correct it. Note the original demonstrations
+themselves ran with a p95 target-vs-achieved lag of 0.30 rad — the replay's
+tracking error is comparable, i.e. the env tracks about as well as the source
+did. **Read policy numbers against this ceiling, not against 100%.**
+
+Raising it is the obvious next piece of work: it likely needs the source's
+variable substep/catch-up timing reproduced more exactly, and possibly the arm
+velocity injection discussed below.
 
 ### One known train/rollout mismatch
 
@@ -186,6 +253,16 @@ Adding one: subclass `Policy`, decorate `@register("name")`, import it in
 `handil/algos/__init__.py`. Diffusion Policy is the natural next addition —
 it reuses ACT's chunked data path, so only the module is needed.
 
+### Status
+
+The pipeline runs end to end: extraction, training (BC-RNN converges cleanly —
+val 0.0060, no overfitting gap) and closed-loop evaluation all work. What has
+**not** been established is that any policy trained here succeeds at the task;
+with the replay ceiling at 5% success, the environment needs the fidelity work
+above before a policy comparison would mean anything. The method × algorithm
+matrix in `run_comparison.py` is wired and ready, but its numbers are not yet
+worth reading.
+
 ---
 
 ## Layout
@@ -195,9 +272,10 @@ handil/
   data/    schema · logs (schema-variance readers) · methods · actions · extract · dataset
   envs/    scene (MjSpec rebuild + gains) · rollout (control loop + success criteria)
   algos/   base (registry) · bc · act · ibc
-  eval/    closed-loop evaluation
+  eval/    evaluate (closed-loop) · replay (demo calibration)
   train.py
-scripts/   extract_data.py · train_policy.py · evaluate_policy.py · run_comparison.py
+scripts/   extract_data.py · replay_demos.py · train_policy.py
+           evaluate_policy.py · run_comparison.py
 tests/
 ```
 
@@ -211,6 +289,12 @@ Things that will bite anyone reading `hand-control` logs directly:
 
 - **8 distinct npz key-sets** across the archive, with `qpos` widths of 30 / 51
   / 58 (1-, 4- and 5-object scenes). Check `.files` and shapes per run.
+- Runs span **two different scenes** (`pick_place` table at `z=0.625`,
+  `robocasa` counter at `z=0.86`) and two spawn regimes. The directory name
+  does not tell you which; the logged object z does.
+- **Stowed objects free-fall.** Sequential spawn parks them at `z=-5` with
+  collision off and nothing holds them there, so by mid-run they are at
+  `z=-77` … `-360`. Any "is this object active" test must tolerate that.
 - `norm_force` / `tan_force` are `(N,2)` on older runs and `(N,4)` on newer;
   finger order is `(thumb, index, middle, ring)`, so the missing middle/ring
   columns pad at the **end**.

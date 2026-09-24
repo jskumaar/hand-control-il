@@ -26,7 +26,8 @@ def main() -> int:
     ap.add_argument("--out", type=Path, default=Path("data/episodes"))
     ap.add_argument("--root", type=Path, default=None,
                     help="hand-control repo root (default: env or sibling dir)")
-    ap.add_argument("--scene", default="pick_place")
+    ap.add_argument("--scene", default="robocasa", choices=["robocasa", "pick_place"],
+                    help="scene the runs were recorded in (ICRA runs are robocasa)")
     ap.add_argument("--outcomes", nargs="*", default=["success"],
                     choices=["success", "timeout", "abandoned"],
                     help="which trial outcomes to keep (default: success only)")
@@ -69,7 +70,8 @@ def main() -> int:
         try:
             got = extract_run(run, args.out, scene.kp_arm, palm, jnt_range,
                               outcomes=tuple(args.outcomes),
-                              min_steps=args.min_steps)
+                              min_steps=args.min_steps,
+                              object_bodies=scene.object_bodies)
         except Exception as e:
             skipped[f"extract failed: {type(e).__name__}"] += 1
             continue
