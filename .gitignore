@@ -1,0 +1,16 @@
+# Extracted datasets and training outputs — regenerate with scripts/
+data/
+runs/
+*.npz
+*.pt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+uv.lock
+
+# MuJoCo
+MUJOCO_LOG.TXT

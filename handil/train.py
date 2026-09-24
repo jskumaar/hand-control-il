@@ -1,0 +1,154 @@
+"""Training loop shared by every algorithm."""
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import asdict, dataclass
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, random_split
+
+from .algos import build
+from .data.dataset import (EpisodeStore, Normalizer, SequenceDataset,
+                           TransitionDataset, load_manifest, select)
+from .data.schema import ACT_DIM, OBS_DIM
+
+
+@dataclass
+class TrainConfig:
+    algo: str = "bc_mlp"
+    data_dir: str = "data/episodes"
+    out_dir: str = "runs"
+    # data selection -- the experimental variable
+    pipeline: str | None = None
+    retargeter: str | None = None
+    method_key: str | None = None
+    obj: str | None = None
+    outcome: tuple[str, ...] = ("success",)
+    exclude_ablations: bool = True
+    max_episodes: int | None = None
+    # optimisation
+    epochs: int = 100
+    batch_size: int = 256
+    lr: float = 1e-4
+    weight_decay: float = 1e-4
+    val_frac: float = 0.1
+    seed: int = 0
+    device: str = "auto"
+    num_workers: int = 0
+    horizon: int = 10
+    chunk: int = 16
+    algo_kwargs: dict = None
+
+    def resolved_device(self) -> str:
+        if self.device != "auto":
+            return self.device
+        return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def make_datasets(cfg: TrainConfig):
+    data_dir = Path(cfg.data_dir)
+    eps = select(load_manifest(data_dir), pipeline=cfg.pipeline,
+                 retargeter=cfg.retargeter, method_key=cfg.method_key,
+                 obj=cfg.obj, outcome=tuple(cfg.outcome),
+                 exclude_ablations=cfg.exclude_ablations)
+    if not eps:
+        raise SystemExit("no episodes matched the selection")
+    if cfg.max_episodes:
+        # Deterministic subsample, so a data-scaling sweep is reproducible.
+        rng = np.random.default_rng(cfg.seed)
+        idx = rng.permutation(len(eps))[: cfg.max_episodes]
+        eps = [eps[i] for i in sorted(idx)]
+
+    store = EpisodeStore(data_dir, eps)
+    norm = store.fit_normalizer()
+
+    probe = build(cfg.algo, obs_dim=OBS_DIM, act_dim=ACT_DIM,
+                  **(cfg.algo_kwargs or {}))
+    if probe.horizon > 1 or probe.chunk > 1:
+        ds = SequenceDataset(store, norm, horizon=probe.horizon, chunk=probe.chunk)
+    else:
+        ds = TransitionDataset(store, norm)
+    if len(ds) == 0:
+        raise SystemExit("dataset is empty after windowing; lower horizon/chunk")
+    return ds, norm, eps, probe
+
+
+def train(cfg: TrainConfig) -> dict:
+    torch.manual_seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    dev = cfg.resolved_device()
+
+    ds, norm, eps, policy = make_datasets(cfg)
+    n_val = max(1, int(len(ds) * cfg.val_frac))
+    tr, va = random_split(ds, [len(ds) - n_val, n_val],
+                          generator=torch.Generator().manual_seed(cfg.seed))
+    dl_tr = DataLoader(tr, batch_size=cfg.batch_size, shuffle=True,
+                       num_workers=cfg.num_workers, drop_last=True)
+    dl_va = DataLoader(va, batch_size=cfg.batch_size, num_workers=cfg.num_workers)
+
+    policy = policy.to(dev)
+    policy.normalizer = norm
+    opt = torch.optim.AdamW(policy.parameters(), lr=cfg.lr,
+                            weight_decay=cfg.weight_decay)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.epochs)
+
+    out = Path(cfg.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    norm.save(out / "normalizer.npz")
+    (out / "config.json").write_text(json.dumps(asdict(cfg), indent=2, default=str))
+    (out / "episodes.json").write_text(json.dumps(eps, indent=2))
+
+    hist, best = [], float("inf")
+    t0 = time.time()
+    for ep in range(cfg.epochs):
+        policy.train()
+        tot = n = 0
+        for batch in dl_tr:
+            batch = [b.to(dev) for b in batch]
+            loss = policy.loss(batch)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
+            opt.step()
+            tot += float(loss) * len(batch[0])
+            n += len(batch[0])
+        tr_loss = tot / max(n, 1)
+
+        policy.eval()
+        tot = n = 0
+        with torch.no_grad():
+            for batch in dl_va:
+                batch = [b.to(dev) for b in batch]
+                tot += float(policy.loss(batch)) * len(batch[0])
+                n += len(batch[0])
+        va_loss = tot / max(n, 1)
+        sched.step()
+        hist.append({"epoch": ep, "train": tr_loss, "val": va_loss})
+
+        if va_loss < best:
+            best = va_loss
+            torch.save({"state_dict": policy.state_dict(), "algo": cfg.algo,
+                        "algo_kwargs": cfg.algo_kwargs or {},
+                        "obs_dim": OBS_DIM, "act_dim": ACT_DIM},
+                       out / "best.pt")
+        if ep % max(1, cfg.epochs // 20) == 0 or ep == cfg.epochs - 1:
+            print(f"  epoch {ep:4d}  train {tr_loss:.5f}  val {va_loss:.5f}")
+
+    summary = {"algo": cfg.algo, "n_episodes": len(eps), "n_samples": len(ds),
+               "best_val": best, "train_s": time.time() - t0,
+               "device": dev, "history": hist}
+    (out / "summary.json").write_text(json.dumps(summary, indent=2))
+    return summary
+
+
+def load_policy(run_dir: Path, device: str = "cpu"):
+    ck = torch.load(Path(run_dir) / "best.pt", map_location=device,
+                    weights_only=False)
+    p = build(ck["algo"], obs_dim=ck["obs_dim"], act_dim=ck["act_dim"],
+              **ck.get("algo_kwargs", {}))
+    p.load_state_dict(ck["state_dict"])
+    p.normalizer = Normalizer.load(Path(run_dir) / "normalizer.npz")
+    return p.to(device).eval()
