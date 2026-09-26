@@ -216,17 +216,30 @@ scores the result. That is the ceiling for any learned policy here, and it
 separates "the policy is weak" from "the env is wrong" — a distinction that is
 otherwise very easy to misread.
 
-On the first 20 ICRA episodes it currently reaches **25% pick / 5% success**.
-That is the honest ceiling, and it is well below 100% for a structural reason:
-replay is open-loop, so a 40-second contact-rich manipulation accumulates
-tracking error with no feedback to correct it. Note the original demonstrations
-themselves ran with a p95 target-vs-achieved lag of 0.30 rad — the replay's
-tracking error is comparable, i.e. the env tracks about as well as the source
-did. **Read policy numbers against this ceiling, not against 100%.**
+Across all 44 ICRA episodes it currently reaches **20% pick / 14% success**,
+and **38% pick / 31% success** on the best-represented method
+(`baseline+anyteleop`, n=16). Palm position now tracks the demonstrations to
+**1.4–2.1 cm p95**, and on several episodes the replay's closest hand-object
+approach matches the log to within a millimetre.
 
-Raising it is the obvious next piece of work: it likely needs the source's
-variable substep/catch-up timing reproduced more exactly, and possibly the arm
-velocity injection discussed below.
+It is still well below 100% for a structural reason: replay is open-loop, so a
+40-second contact-rich manipulation has no feedback to correct residual
+tracking error, and a demonstration whose grasp was marginal will not survive
+it. **Read policy numbers against this ceiling, not against 100%.**
+
+#### The bug that dominated this number
+
+Arm joints 0/2/4/6 are **continuous** — they rotate freely. The source writes
+`model.jnt_range[j] = [-pi, pi]` for them, but only to bound its IK *sampling*;
+it is not a physical stop. Enforcing it as one clamped joint 2 by ~0.17 rad,
+which alone is ~9 cm of palm error — more than enough to miss a 5 cm object,
+and enough to take replay success from 30% to 5%.
+
+The tell was a static-hold test: commanded an off-home posture, every joint
+converged to 1e-11 **except joint 2**, which sat at exactly π. The
+demonstrations routinely drive joint 2 to 3.7–4.1 rad and joint 6 to 3.2–3.6 rad
+on every ICRA run. Fixing it moved palm error from 90 mm to 0.2 mm on that test.
+`tests/test_env.py` pins all of this.
 
 ### One known train/rollout mismatch
 

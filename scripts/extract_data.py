@@ -45,6 +45,7 @@ def main() -> int:
     print("building scene for gains / palm index ...")
     scene = build_scene(args.scene, root=args.root)
     jnt_range = np.asarray(scene.model.jnt_range)
+    jnt_limited = np.asarray(scene.model.jnt_limited)
     print(f"  kp_arm = {np.array2string(scene.kp_arm, precision=1)}")
 
     # The palm body index within the logged xpos array is the compiled body id,
@@ -70,6 +71,7 @@ def main() -> int:
         try:
             got = extract_run(run, args.out, scene.kp_arm, palm, jnt_range,
                               outcomes=tuple(args.outcomes),
+                              jnt_limited=jnt_limited,
                               min_steps=args.min_steps,
                               object_bodies=scene.object_bodies)
         except Exception as e:

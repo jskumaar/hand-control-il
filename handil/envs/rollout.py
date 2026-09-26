@@ -78,6 +78,10 @@ class PickPlaceEnv:
         self.model.geom_contype[:] = self._contype0
         self.model.geom_conaffinity[:] = self._conaff0
 
+        from ..data.actions import bounded_mask
+        self._bounded = bounded_mask(np.asarray(self.model.jnt_range),
+                                     np.asarray(self.model.jnt_limited))
+
         self._bowl = self._bowl_geometry()
         self._obj_col_gids = self._object_geoms()
         self._in_bowl_t: dict[int, float] = {}
@@ -349,8 +353,12 @@ class PickPlaceEnv:
     def step(self, action: np.ndarray) -> np.ndarray:
         """Apply a 23-vector joint-position target for one control period."""
         self._target = np.asarray(action, float).reshape(N_ROBOT).copy()
-        np.clip(self._target, self.model.jnt_range[:N_ROBOT, 0],
-                self.model.jnt_range[:N_ROBOT, 1], out=self._target)
+        # Clip only joints with a real stop: joints 0/2/4/6 are continuous and
+        # the demonstrations drive them well past pi.
+        b = self._bounded
+        self._target[b] = np.clip(self._target[b],
+                                  self.model.jnt_range[:N_ROBOT, 0][b],
+                                  self.model.jnt_range[:N_ROBOT, 1][b])
         tau = np.zeros(self.model.nv)
         stowed = ([j for j in range(len(self.scene.object_bodies))
                    if j != self.active_object] if self.sequential else [])

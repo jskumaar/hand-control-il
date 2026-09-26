@@ -177,8 +177,20 @@ def build_scene(scene: str = "robocasa", root: str | Path | None = None,
     finally:
         os.chdir(cwd)
 
-    for j in (0, 2, 4, 6):                      # continuous joints
-        model.jnt_range[j] = [-np.pi, np.pi]
+    # Arm joints 0/2/4/6 are CONTINUOUS on the Gen3 -- they rotate freely. The
+    # source repo writes `model.jnt_range[j] = [-pi, pi]` for them, but only to
+    # bound its IK *sampling*; it is not a physical stop.
+    #
+    # Enforcing it as one breaks replay outright: the demonstrations routinely
+    # drive joint 2 to 3.7-4.1 rad and joint 6 to 3.2-3.6 rad, so a +-pi limit
+    # clamps joint 2 by ~0.17 rad, which alone is ~9 cm of palm position error --
+    # more than enough to miss a 5 cm object. Measured on every ICRA run.
+    #
+    # So mark them limit-free here and let them wrap, which is what the real
+    # robot and the recorded data both do.
+    for j in (0, 2, 4, 6):
+        model.jnt_limited[j] = 0
+        model.jnt_range[j] = [0.0, 0.0]         # hi == lo => "unbounded" by our convention
 
     for gi in range(model.ngeom):
         bid = model.geom_bodyid[gi]

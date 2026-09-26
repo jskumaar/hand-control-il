@@ -94,3 +94,48 @@ def test_windowed_policy_feeds_the_requested_history():
     for i in range(10):
         wp(np.full(OBS_DIM, i, dtype=float))
     assert f.seen == (4, OBS_DIM)     # capped at the horizon
+
+
+def test_continuous_arm_joints_are_not_limited(env):
+    """Joints 0/2/4/6 rotate freely; clamping them to +-pi breaks replay.
+
+    The source sets jnt_range = [-pi, pi] on them to bound IK sampling, not as a
+    physical stop. Enforcing it clamps joint 2 by ~0.17 rad on real demos, which
+    is ~9 cm of palm error -- enough to miss the object entirely.
+    """
+    for j in (0, 2, 4, 6):
+        assert not env.model.jnt_limited[j], f"joint {j} must be unlimited"
+        assert not env._bounded[j]
+    for j in (1, 3, 5):
+        assert env.model.jnt_limited[j], f"joint {j} must keep its stop"
+
+
+def test_step_does_not_clip_continuous_joints(env):
+    """A target beyond pi on a continuous joint must survive to the controller."""
+    import numpy as np
+    from handil.envs.scene import home_qpos
+    env.reset()
+    tgt = home_qpos()
+    tgt[2] = 3.7                      # real demos reach 3.7-4.1 rad here
+    env.step(tgt)
+    assert env._target[2] == pytest.approx(3.7)
+
+
+def test_static_hold_of_an_off_home_posture_converges(env):
+    """The arm must be able to hold a commanded posture to high precision.
+
+    This is the test that caught the +-pi clamp: every joint converged to 1e-11
+    except joint 2, which sat exactly at pi instead of its commanded 3.31.
+    """
+    import numpy as np
+    from handil.envs.scene import home_qpos
+    env.reset()
+    tgt = home_qpos()
+    tgt[0] += 0.15
+    tgt[2] = 3.31                     # beyond pi on purpose
+    tgt[4] += 0.8
+    env.n_substeps = 25
+    for _ in range(200):
+        env.step(tgt)
+    err = np.abs(env.data.qpos[:7] - tgt[:7])
+    assert err.max() < 1e-6, f"per-joint error {err}"
