@@ -227,6 +227,28 @@ It is still well below 100% for a structural reason: replay is open-loop, so a
 tracking error, and a demonstration whose grasp was marginal will not survive
 it. **Read policy numbers against this ceiling, not against 100%.**
 
+#### What has been ruled out
+
+Things tried that did **not** move the ceiling, so future work needn't repeat
+them:
+
+| Tried | Result |
+|---|---|
+| Arm velocity injection (the source's `qvel[:7] = _qdot_arm`) | no change — and the Kd term it pairs with is identically zero anyway |
+| Servoing the arm onto the logged *achieved* positions instead of recovered targets | no change (~0.30 rad → same) |
+| Interpolating the action stream 4× onto a finer grid | tracking p95 0.146 → 0.136 rad, success unchanged within noise |
+| Per-step substep counts from each episode's own timestamps | helps, and is kept — `replay_episode(t=...)` |
+
+Also checked: replay success does **not** correlate with any demonstration
+feature — successes and failures have statistically identical peak finger force,
+closest approach, duration, and GRASP-repair fraction. The residual is replay
+dynamics, not demo quality.
+
+One data-quality note that fell out of this: `baseline+dexpilot` demos show a
+median *peak* finger force of 2299 N (against 50 N for `baseline+anyteleop`),
+which is not physical for a LEAP hand and indicates deep interpenetration in
+those recordings. Worth knowing before treating that cell as comparable.
+
 #### The bug that dominated this number
 
 Arm joints 0/2/4/6 are **continuous** — they rotate freely. The source writes

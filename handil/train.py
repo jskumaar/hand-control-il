@@ -113,7 +113,7 @@ def train(cfg: TrainConfig) -> dict:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
             opt.step()
-            tot += float(loss) * len(batch[0])
+            tot += loss.detach().item() * len(batch[0])
             n += len(batch[0])
         tr_loss = tot / max(n, 1)
 
@@ -122,7 +122,7 @@ def train(cfg: TrainConfig) -> dict:
         with torch.no_grad():
             for batch in dl_va:
                 batch = [b.to(dev) for b in batch]
-                tot += float(policy.loss(batch)) * len(batch[0])
+                tot += policy.loss(batch).detach().item() * len(batch[0])
                 n += len(batch[0])
         va_loss = tot / max(n, 1)
         sched.step()
