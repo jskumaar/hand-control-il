@@ -288,15 +288,51 @@ Adding one: subclass `Policy`, decorate `@register("name")`, import it in
 `handil/algos/__init__.py`. Diffusion Policy is the natural next addition —
 it reuses ACT's chunked data path, so only the module is needed.
 
-### Status
+### Status: first results, and why closed-loop is still 0%
 
-The pipeline runs end to end: extraction, training (BC-RNN converges cleanly —
-val 0.0060, no overfitting gap) and closed-loop evaluation all work. What has
-**not** been established is that any policy trained here succeeds at the task;
-with the replay ceiling at 5% success, the environment needs the fidelity work
-above before a policy comparison would mean anything. The method × algorithm
-matrix in `run_comparison.py` is wired and ready, but its numbers are not yet
-worth reading.
+The full matrix runs. On the offline axis it already separates the cells
+cleanly (60 epochs, 12 eval rollouts per cell):
+
+| Collection method | Algorithm | Episodes | Val loss | Closed-loop success |
+|---|---|---:|---:|---:|
+| `baseline+anyteleop` | BC-RNN | 16 | **0.0017** | 0% |
+| `baseline+anyteleop` | BC-MLP | 16 | 0.0053 | 0% |
+| `contact_aware+vwj` | BC-MLP | 9 | 0.0175 | 0% |
+| `baseline+vwj` | BC-RNN | 13 | 0.0201 | 0% |
+| `baseline+vwj` | BC-MLP | 13 | 0.0360 | 0% |
+| `contact_aware+vwj` | BC-RNN | 9 | 0.0372 | 0% |
+
+Two things are readable there: temporal context helps on the
+best-represented cell (BC-RNN beats BC-MLP 3×), and `baseline+anyteleop` data
+is 7–20× more learnable than the other cells. That is the comparison this repo
+exists to make, on the offline axis.
+
+**Closed-loop success is 0% everywhere, and the cause is diagnosed.** It is not
+underfitting: fed demonstration observations, the BC-RNN reproduces the
+demonstrated actions to 0.004 rad median / 0.016 rad p95. But rolled out, the
+arm's state deviates from the demonstrated trajectory by **1.06 rad within 50
+steps**, growing to 1.8 rad.
+
+That is textbook BC covariate shift, made severe by the data: **all 16
+demonstrations start from the identical home pose** and the scene is
+deterministic, so the policy has seen exactly one trajectory through state
+space and no recovery states at all. The moment it deviates it is off-manifold
+with nothing to imitate.
+
+The fixes are the standard ones, and none of them is an env problem:
+
+1. **More and more varied data** — pool the `ICRA_ablations` runs (20 more of
+   the same scene), keep `timeout`/`abandoned` episodes as negative-to-neutral
+   coverage, and add initial-state jitter so the demonstrations span a volume
+   rather than a line.
+2. **Action chunking** — ACT is implemented and registered; chunked prediction
+   is the standard remedy for exactly this compounding, and it has not yet been
+   run in the matrix.
+3. **DAgger-style aggregation**, which needs the rollout env that now works.
+
+So: the infrastructure is done and validated, the offline comparison is
+already informative, and closed-loop success needs the data and algorithm work
+above rather than more simulator fidelity.
 
 ---
 
