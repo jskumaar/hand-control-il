@@ -47,6 +47,23 @@ class TrainConfig:
             return self.device
         return "cuda" if torch.cuda.is_available() else "cpu"
 
+    def device_note(self) -> str:
+        """Human-readable device line, loud about an unintended CPU fallback.
+
+        The fallback is silent and expensive -- a torch built for a newer CUDA
+        than the installed driver reports is_available() == False and training
+        runs ~57x slower with only a UserWarning. So say so at startup.
+        """
+        dev = self.resolved_device()
+        if dev != "cpu":
+            name = torch.cuda.get_device_name(0)
+            return f"{dev} ({name})"
+        if self.device == "auto" and torch.cuda.device_count() > 0:
+            return ("cpu  [!] GPUs are present but torch cannot use them -- "
+                    f"this torch is built for CUDA {torch.version.cuda}; "
+                    "reinstall with `uv sync --extra cuda`")
+        return "cpu"
+
 
 def make_datasets(cfg: TrainConfig):
     data_dir = Path(cfg.data_dir)
@@ -81,6 +98,7 @@ def train(cfg: TrainConfig) -> dict:
     np.random.seed(cfg.seed)
     dev = cfg.resolved_device()
 
+    print(f"  device: {cfg.device_note()}")
     ds, norm, eps, policy = make_datasets(cfg)
     n_val = max(1, int(len(ds) * cfg.val_frac))
     tr, va = random_split(ds, [len(ds) - n_val, n_val],

@@ -57,7 +57,7 @@ def main() -> int:
         epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
         seed=args.seed, device=args.device, algo_kwargs=algo_kwargs)
 
-    print(f"algo={cfg.algo}  device={cfg.resolved_device()}")
+    print(f"algo={cfg.algo}")
     print(f"selection: pipeline={cfg.pipeline} retargeter={cfg.retargeter} "
           f"method_key={cfg.method_key} outcomes={cfg.outcome}")
     s = train(cfg)

@@ -288,6 +288,70 @@ Adding one: subclass `Policy`, decorate `@register("name")`, import it in
 `handil/algos/__init__.py`. Diffusion Policy is the natural next addition —
 it reuses ACT's chunked data path, so only the module is needed.
 
+### Status: results, and why closed-loop is still 0%
+
+The full 3 methods x 4 algorithms matrix runs in **3.9 minutes** of GPU
+training. Validation loss, 60 epochs, 12 eval rollouts per cell:
+
+| | `baseline+anyteleop` (16) | `baseline+vwj` (13) | `contact_aware+vwj` (9) |
+|---|---:|---:|---:|
+| BC-MLP | **0.00535** | 0.03599 | 0.01752 |
+| BC-RNN | **0.00174** | 0.02008 | 0.03720 |
+| ACT | **0.03392** | 0.07765 | 0.04238 |
+| IBC | **0.00008** | 0.00048 | 0.00069 |
+
+**Read down the columns, not across the rows.** IBC's objective is an InfoNCE
+cross-entropy over sampled negatives, not an MSE, so its numbers are not
+comparable to the regression losses.
+
+The headline, and the thing this repo was built to answer:
+**`baseline+anyteleop` ranks first under all four algorithms.** That ordering is
+robust to the choice of architecture. Second versus third place flips between
+algorithms, so only the top position is trustworthy at these sample sizes
+(9-16 episodes per cell).
+
+**Closed-loop success is 0% in every cell, and the cause is diagnosed.** It is
+not underfitting: fed demonstration observations, BC-RNN reproduces the
+demonstrated actions to 0.004 rad median / 0.016 rad p95. But rolled out, the
+arm's state deviates from the demonstrated trajectory by **1.6 rad within 50
+steps**.
+
+That is BC covariate shift, and it comes from the data rather than the
+simulator: **every episode of a cell starts from exactly the same home pose**
+(zero spread across all 7 arm joints, verified over all 63 `baseline+anyteleop`
+episodes including ablations) in a deterministic scene. The policy has seen one
+path through state space and no recovery states, so its first deviation is
+fatal. Ground-truth replay through the same env reaches 31% on that cell, so the
+env is not the blocker.
+
+Two experiments already narrow the fix:
+
+| Tried | Result |
+|---|---|
+| **ACT action chunking** (chunk=32) | early drift **0.183 rad at step 50 vs BC-RNN's 1.595** — a ~6x improvement, confirming chunking is the right lever. Still 1.15 rad by step 290; success 0%. |
+| **Pooling 16 -> 63 episodes** (`--include-ablations`) | val 0.00174 -> 0.00166, i.e. no change. Expected in hindsight: the ablation runs add trajectories from the *same* start state, so they add volume but not state-space coverage. |
+
+So the missing ingredient is **varied initial conditions**, not more data and
+not more simulator fidelity. The remaining levers, in order: initial-state
+jitter in the demonstrations (or DAgger-style aggregation using the rollout env,
+which now works), longer action chunks, and keeping `timeout`/`abandoned`
+episodes for off-manifold coverage.
+
+---
+
+## Algorithms
+
+| Name | What it is | Why it's here |
+|---|---|---|
+| `bc_mlp` | one obs → one action | the control: cannot represent multimodality, so it averages conflicting demos |
+| `bc_rnn` | GRU over a 10-frame window | temporal context — a closing and an opening hand look identical in one frame |
+| `act` | action-chunking transformer + CVAE latent | chunking cuts the effective horizon; the latent absorbs operator variation |
+| `ibc` | implicit energy-based policy | an energy surface can hold several equally-good grasps where a regressor must average them |
+
+Adding one: subclass `Policy`, decorate `@register("name")`, import it in
+`handil/algos/__init__.py`. Diffusion Policy is the natural next addition —
+it reuses ACT's chunked data path, so only the module is needed.
+
 ### Status: first results, and why closed-loop is still 0%
 
 The full matrix runs. On the offline axis it already separates the cells
