@@ -17,7 +17,7 @@ Kinova Gen3 (7 DOF) + LEAP hand (16 DOF) = 23 DOF, MuJoCo, 500 Hz physics.
 ## Quick start
 
 ```bash
-uv sync --extra dev                       # torch, mujoco, pytest
+uv sync --extra dev --extra cuda          # torch (cu128), mujoco, pytest
 export HANDCONTROL_ROOT=~/sureshkj/hand-control
 
 # 1. Build the episode dataset from the ICRA benchmark runs
@@ -333,6 +333,35 @@ The fixes are the standard ones, and none of them is an env problem:
 So: the infrastructure is done and validated, the offline comparison is
 already informative, and closed-loop success needs the data and algorithm work
 above rather than more simulator fidelity.
+
+---
+
+## GPU
+
+**Install with `--extra cuda`.** Plain `uv sync` resolves `torch` from PyPI to a
+**cu130** build, which needs an NVIDIA driver >= 580. On a 570.x driver
+(CUDA 12.8) that build reports `cuda.is_available() == False`, and since
+`TrainConfig.resolved_device()` falls back to CPU automatically, training runs
+~57x slower with no error — only a `UserWarning` buried in the log.
+
+The `cuda` extra pins the **cu128** index, which works with a 12.8 driver and
+supports the RTX 5090's Blackwell architecture (`sm_120`) that older CUDA builds
+do not.
+
+Measured on this box (2x RTX 5090), ACT for 60 epochs on 16 episodes:
+
+| Device | Time | Best val |
+|---|---:|---:|
+| CPU | 4557 s (76 min) | 0.04064 |
+| cu128 GPU | **80 s (1.3 min)** | 0.04058 |
+
+Check before a long run:
+
+```bash
+uv run python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
+```
+
+If that prints `False`, you are about to train on CPU.
 
 ---
 
