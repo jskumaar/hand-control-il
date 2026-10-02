@@ -183,10 +183,44 @@ objects need only 0.23-3.6 N per finger, so a 5 cm positioning error cannot be
 compensated by any amount of squeeze. Raising the ceiling further means improving
 open-loop position tracking, not grip force.
 
+### Position vs torque policies, with and without the squeeze
+
+BC-RNN on `contact_aware+anyteleop` (76 episodes), closed-loop drift from the
+demonstrated arm trajectory and closest hand-object approach:
+
+| Policy action space | drift @50 | drift @200 | min \|obj_in_palm\| |
+|---|---:|---:|---:|
+| position | 2.26 rad | 4.19 rad | 0.443 m |
+| **position + squeeze** | **1.12 rad** | **1.83 rad** | **0.303 m** |
+| torque | 1.61 rad | 17.70 rad | 0.434 m |
+| *(demonstration)* | — | — | *0.145 m* |
+
+Two things fall out.
+
+**The squeeze helps a trained policy, not just replay.** It halves drift at both
+horizons and closes 14 cm of the reach gap. That is a better result than the
+replay A/B suggested, and it is the main practical payoff of porting
+`GraspController`.
+
+**Torque is the wrong action space for BC here.** It trains fine (val 0.0070,
+35 s on GPU) and stays numerically stable, but drifts 17.7 rad by step 200 —
+4x worse than position. The reason is structural: a position command is
+*self-correcting*, since a state error enters as a bounded restoring force, while
+a torque command is *open-loop*, so an error integrates twice. Under BC's
+covariate shift, torque amplifies the failure that position partly absorbs.
+
+So the torque action space is the right **label** for the contact-aware GRASP
+phase (it is the only faithful one — see above) but the wrong **command** for a
+BC policy to emit. Those are separable choices, and a sensible next design is a
+position policy with a learned squeeze magnitude, rather than full torque control.
+
 ### What remains untested
 
-Task-level success for the contact-aware pipeline, now blocked on reach accuracy
-rather than on the missing squeeze. The learnability evidence above stands.
+Task-level success for the contact-aware pipeline. Both candidate fixes are now
+implemented and measured: the squeeze helps substantially but leaves reach short
+of the demonstration (0.303 m vs 0.145 m), and torque control makes things worse.
+The remaining gap is open-loop position tracking under covariate shift, which
+points at varied initial conditions / DAgger rather than at the controller.
 
 ---
 
