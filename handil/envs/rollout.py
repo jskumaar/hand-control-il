@@ -58,7 +58,8 @@ class PickPlaceEnv:
     def __init__(self, scene: Scene | None = None, kp_hand: float = 2.0,
                  control_hz: float = 42.0, velocity_injection: bool = False,
                  scene_name: str = "robocasa", root=None,
-                 active_object: int | str = 0, sequential: bool = True):
+                 active_object: int | str = 0, sequential: bool = True,
+                 action_space: str = "position"):
         import mujoco as mj
         self.mj = mj
         self.scene = scene if scene is not None else build_scene(scene_name, root=root)
@@ -67,6 +68,10 @@ class PickPlaceEnv:
         self.kp = np.concatenate([self.scene.kp_arm,
                                   np.full(N_ROBOT - N_ARM, float(kp_hand))])
         self.velocity_injection = velocity_injection
+        if action_space not in ("position", "torque"):
+            raise ValueError(f"action_space must be position|torque, got {action_space!r}")
+        self.action_space = action_space
+        self._tau_cmd = np.zeros(N_ROBOT)
         # Demos are logged at ~42 Hz wall; the policy runs at that rate and each
         # control step is held for the matching number of 2 ms physics steps.
         self.n_substeps = max(1, int(round((1.0 / control_hz) / self.model.opt.timestep)))
@@ -261,6 +266,7 @@ class PickPlaceEnv:
             mj.mj_name2id(self.model, mj.mjtObj.mjOBJ_BODY, n)][2])
             for n in self.scene.object_bodies]
         self._target = self.data.qpos[:N_ROBOT].copy()
+        self._tau_cmd = np.zeros(N_ROBOT)
         return self.observe()
 
     def _settle_active(self, steps: int = 250):
@@ -351,14 +357,26 @@ class PickPlaceEnv:
         return nf, tf
 
     def step(self, action: np.ndarray) -> np.ndarray:
-        """Apply a 23-vector joint-position target for one control period."""
-        self._target = np.asarray(action, float).reshape(N_ROBOT).copy()
-        # Clip only joints with a real stop: joints 0/2/4/6 are continuous and
-        # the demonstrations drive them well past pi.
-        b = self._bounded
-        self._target[b] = np.clip(self._target[b],
-                                  self.model.jnt_range[:N_ROBOT, 0][b],
-                                  self.model.jnt_range[:N_ROBOT, 1][b])
+        """Apply one control period of `action`.
+
+        In "position" mode the action is a 23-vector of joint targets (rad) and a
+        P law converts it to torque. In "torque" mode the action IS the commanded
+        joint torque (N*m) and is applied directly -- the only faithful way to
+        execute a contact-aware grasp, whose squeeze is an internal-force torque
+        with no position-target equivalent.
+        """
+        a = np.asarray(action, float).reshape(N_ROBOT).copy()
+        if self.action_space == "torque":
+            self._tau_cmd = a
+            self._target = None
+        else:
+            self._target = a
+            # Clip only joints with a real stop: joints 0/2/4/6 are continuous
+            # and the demonstrations drive them well past pi.
+            b = self._bounded
+            self._target[b] = np.clip(self._target[b],
+                                      self.model.jnt_range[:N_ROBOT, 0][b],
+                                      self.model.jnt_range[:N_ROBOT, 1][b])
         tau = np.zeros(self.model.nv)
         stowed = ([j for j in range(len(self.scene.object_bodies))
                    if j != self.active_object] if self.sequential else [])
@@ -369,8 +387,11 @@ class PickPlaceEnv:
                 self.data.qvel[:N_ARM] = np.clip(
                     self.data.qvel[:N_ARM], -QVEL_ARM_MAX, QVEL_ARM_MAX)
             tau[:] = 0.0
-            err = self._target - self.data.qpos[:N_ROBOT]
-            tau[:N_ROBOT] = self.kp * err
+            if self.action_space == "torque":
+                tau[:N_ROBOT] = self._tau_cmd
+            else:
+                tau[:N_ROBOT] = self.kp * (self._target
+                                           - self.data.qpos[:N_ROBOT])
             np.clip(self.data.qvel[:N_ARM], -QVEL_ARM_MAX, QVEL_ARM_MAX,
                     out=self.data.qvel[:N_ARM])
             self.data.qfrc_applied[:] = tau

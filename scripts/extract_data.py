@@ -32,6 +32,13 @@ def main() -> int:
                     choices=["success", "timeout", "abandoned"],
                     help="which trial outcomes to keep (default: success only)")
     ap.add_argument("--include-obsolete", action="store_true")
+    ap.add_argument("--action-space", default="position",
+                    choices=["position", "torque"],
+                    help="position: joint targets in rad, inverted from the logged "
+                         "torque (default). torque: the logged joint torque in N*m, "
+                         "which needs no inversion and is the only faithful label "
+                         "for the contact-aware GRASP phase (its PD gains are not "
+                         "logged, so its position target is unrecoverable).")
     ap.add_argument("--min-steps", type=int, default=20)
     ap.add_argument("--limit", type=int, default=None, help="first N runs only")
     args = ap.parse_args()
@@ -72,6 +79,7 @@ def main() -> int:
             got = extract_run(run, args.out, scene.kp_arm, palm, jnt_range,
                               outcomes=tuple(args.outcomes),
                               jnt_limited=jnt_limited,
+                              action_space=args.action_space,
                               min_steps=args.min_steps,
                               object_bodies=scene.object_bodies)
         except Exception as e:
@@ -85,6 +93,7 @@ def main() -> int:
         "n_episodes": len(metas),
         "outcomes_kept": args.outcomes,
         "scene": args.scene,
+        "action_space": args.action_space,
         "kp_arm": scene.kp_arm.tolist(),
         "episodes": [asdict(m) for m in metas],
     }
@@ -101,7 +110,7 @@ def main() -> int:
         print(f"  {k:42s} {v:4d} episodes  {steps:8d} steps")
 
     n_conflict = sum(m.method_conflict for m in metas)
-    n_fallback = sum(m.action_source != "torque" for m in metas)
+    n_fallback = sum(m.action_source == "next_qpos" for m in metas)
     print(f"\nmethod-label conflicts: {n_conflict}"
           f"   |   next_qpos action fallback: {n_fallback}")
     viol = [m.limit_viol_max_rad for m in metas if np.isfinite(m.limit_viol_max_rad)]

@@ -94,3 +94,22 @@ def test_clip_to_limits_respects_unbounded_joints():
     out = act.clip_to_limits(targets, jr)
     assert out[:, 0].max() == 1.0
     assert out[:, 3].max() == 5.0           # untouched
+
+
+def test_torques_from_log_is_the_commanded_torque():
+    """The torque action space needs no inversion and no gains."""
+    rng = np.random.default_rng(3)
+    n = 50
+    tau = rng.normal(size=(n, N_ROBOT))
+    bias = rng.normal(size=(n, N_ROBOT))
+    qfrc = tau + bias                       # what the controller writes
+    got = act.torques_from_log(qfrc, bias)
+    np.testing.assert_allclose(got, tau, atol=1e-12)
+
+
+def test_torques_from_log_ignores_object_dofs():
+    """Only the 23 robot DOFs are actions; freejoint columns are not."""
+    n = 10
+    qfrc = np.ones((n, 47))
+    bias = np.zeros((n, 47))
+    assert act.torques_from_log(qfrc, bias).shape == (n, N_ROBOT)

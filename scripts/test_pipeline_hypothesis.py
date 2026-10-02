@@ -9,7 +9,8 @@ from pathlib import Path
 import numpy as np
 from handil.train import TrainConfig, train
 
-DATA = "data/icra_all"
+import os
+DATA = os.environ.get("HANDIL_DATA", "data/icra_all")
 N_EPS = 60          # both cells have >= 63
 SEEDS = (0, 1, 2)
 ALGOS = ("bc_mlp", "bc_rnn")
@@ -20,7 +21,7 @@ for algo in ALGOS:
         for seed in SEEDS:
             cfg = TrainConfig(
                 algo=algo, data_dir=DATA,
-                out_dir=f"runs/pipe/{algo}_{pipe}_s{seed}",
+                out_dir=f"runs/{os.environ.get('HANDIL_TAG','pipe')}/{algo}_{pipe}_s{seed}",
                 pipeline=pipe, retargeter="anyteleop",
                 exclude_ablations=False, max_episodes=N_EPS,
                 epochs=60, seed=seed)
@@ -32,7 +33,7 @@ for algo in ALGOS:
                   f"eps={s['n_episodes']:3d} samples={s['n_samples']:6d} "
                   f"val={s['best_val']:.5f}", flush=True)
 
-Path("runs/pipe/results.json").write_text(json.dumps(rows, indent=2))
+Path(f"runs/{os.environ.get('HANDIL_TAG','pipe')}/results.json").write_text(json.dumps(rows, indent=2))
 print("\n=== pipeline effect, same retargeter (anyteleop), %d episodes ===" % N_EPS)
 for algo in ALGOS:
     out = {}

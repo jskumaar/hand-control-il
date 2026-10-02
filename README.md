@@ -111,12 +111,49 @@ artifact:
 - The contact-aware grasp *is* an internal-force controller, which the rollout
   env does not implement at all.
 
-So the task-level axis of the hypothesis is **not yet tested**. Testing it
-requires porting the source's `GraspController` internal-force and
-slip-correction torques into `handil/envs/rollout.py`, so that a contact-aware
-action can express a squeeze. Until then, read the learnability result above as
-the evidence, and treat contact-aware replay/rollout numbers as uninformative
-rather than negative.
+### Learning the torque directly instead
+
+The GRASP-phase position target is unrecoverable, but the **torque is logged
+outright** — so rather than repairing a position label, learn the thing the
+controller actually commanded. `--action-space torque` does this:
+
+```
+action = qfrc_applied[:23] - qfrc_bias[:23]      # N*m, no inversion, no gains
+```
+
+All 235 episodes extract with `action_source=logged_torque` and **zero GRASP
+repair**, and the squeeze is now *in* the labels: contact-aware finger torques
+have 2.4x the spread of baseline (0.683 vs 0.281 N*m std), exactly the
+internal-force component the position label was throwing away.
+
+**The result flips with architecture** (same controlled setup, 3 seeds):
+
+| | baseline | contact_aware | winner |
+|---|---|---|---|
+| BC-MLP | 0.0413 ± 0.0018 | **0.0275** ± 0.0012 | contact_aware, 1.5x |
+| BC-RNN | **0.0062** ± 0.0001 | 0.0096 ± 0.0020 | baseline, 1.5x |
+
+Compare with position space, where contact-aware won on *both* architectures
+(3.1x and 1.4x). So the contact-aware advantage is **not architecture-independent
+once the squeeze torques are in the label** — a recurrent model extracts more
+from the smoother baseline torque stream than from the contact-aware one. That is
+a real finding about the data, not an artifact.
+
+**Caveat on torque rollout.** Torque is an *open-loop* command: a small state
+mismatch makes the commanded torque wrong for the actual state and the error
+integrates twice, where a position command self-corrects. Open-loop torque replay
+of the demonstrations diverges to 2-58 rad of arm error, so `action_space="torque"`
+in `PickPlaceEnv` is correct for *executing a trained policy* (which re-reads
+state every step) but useless for replaying a recorded stream.
+
+### What remains untested
+
+Task-level success for the contact-aware pipeline. The torque action space is the
+right label, but closing the loop still needs either a torque policy good enough
+to hold a grasp, or the source's `GraspController` internal-force and
+slip-correction torques ported into the env so a *position* policy can express a
+squeeze. Until then: the learnability evidence above stands, and contact-aware
+replay/rollout numbers are uninformative rather than negative.
 
 ---
 
