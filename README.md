@@ -44,6 +44,82 @@ assets are referenced by path, never copied, so the scene stays single-sourced.
 
 ---
 
+## The hypothesis under test
+
+**Does contact-aware collection produce better downstream policies than raw
+teleop?** That is the question this repo exists to answer, and testing it needs
+the retargeter held fixed — otherwise pipeline, retargeter and sample size vary
+together and the result means nothing.
+
+`anyteleop` is the only clean pair in the archive: `baseline+anyteleop` 63
+episodes against `contact_aware+anyteleop` 76, same four objects, matched
+solref-ablation spread. (This needs the full `logs/` tree with
+`--include-ablations` — `ICRA_experiments` alone has just 3
+`contact_aware+anyteleop` episodes.)
+
+### Result: supported on learnability
+
+60 episodes per cell, 3 seeds, pipeline as the only variable:
+
+| | seed 0 | seed 1 | seed 2 | **mean** | train samples |
+|---|---|---|---|---|---|
+| BC-MLP `baseline` | 0.00724 | 0.00802 | 0.00776 | 0.00768 | 94,048 |
+| BC-MLP `contact_aware` | 0.00360 | 0.00203 | 0.00190 | **0.00251** | 50,915 |
+| BC-RNN `baseline` | 0.00166 | 0.00161 | 0.00166 | 0.00164 | 93,448 |
+| BC-RNN `contact_aware` | 0.00082 | 0.00150 | 0.00119 | **0.00117** | 50,315 |
+
+Contact-aware wins on both architectures — **3.1x** on BC-MLP with no overlap
+between the seed distributions, **1.4x** on BC-RNN — and does it on *half* the
+training samples, since its episodes are 44% shorter (867 vs 1556 steps).
+
+### The mechanism, measured directly
+
+Cross-episode spread of the hand posture at peak grasp, and of where the object
+sits in the palm. Lower = the pipeline puts the hand in the same configuration
+every time, which is what should make the data easier to imitate:
+
+| Object | hand posture | object-in-palm |
+|---|---|---|
+| gelatin box | 0.407 → **0.112** (−72%) | −55% |
+| wood block | 0.320 → **0.252** (−21%) | −46% |
+| orange | 0.341 → **0.268** (−21%) | −46% |
+| mug | 0.279 → 0.333 (+19%) | +7% |
+
+Three of four objects get markedly more consistent. The **mug is the exception**
+— 43 collision hulls and a handle make a canonical grasp hardest to define.
+
+### Two caveats, stated plainly
+
+**1. Part of the val-loss win is structural.** Contact-aware actions are
+intrinsically smoother (action-step p95 0.0095 vs 0.0147; action std 0.276 vs
+0.350), and smoother targets are easier to regress *regardless* of whether the
+resulting policy is better at the task. Val loss is necessary evidence here, not
+sufficient.
+
+**2. The replay ceiling cannot adjudicate this, and the reason is our tooling.**
+Policy-free replay gives `baseline` 12% pick / 4% success against
+`contact_aware` 0% / 0% — which looks like the opposite conclusion. It is an
+artifact:
+
+- **51% of contact-aware rows have their finger targets replaced** by `qpos[t+1]`
+  (vs 0% for baseline), because the pipeline's internal-force torques are not
+  invertible from `qfrc_applied` — see *Actions are not logged* below.
+- That collapses the commanded squeeze margin from **0.362 rad to 0.090 rad**, so
+  the replayed grasp cannot generate force.
+- The demos themselves generated *more* grip force than baseline (**126 N vs
+  62 N**), so the data is not the problem.
+- The contact-aware grasp *is* an internal-force controller, which the rollout
+  env does not implement at all.
+
+So the task-level axis of the hypothesis is **not yet tested**. Testing it
+requires porting the source's `GraspController` internal-force and
+slip-correction torques into `handil/envs/rollout.py`, so that a contact-aware
+action can express a squeeze. Until then, read the learnability result above as
+the evidence, and treat contact-aware replay/rollout numbers as uninformative
+rather than negative.
+
+---
+
 ## Scope: the ICRA benchmark runs
 
 The work targets `logs/ICRA_*`, which is the clean, counterbalanced benchmark:
@@ -304,11 +380,12 @@ training. Validation loss, 60 epochs, 12 eval rollouts per cell:
 cross-entropy over sampled negatives, not an MSE, so its numbers are not
 comparable to the regression losses.
 
-The headline, and the thing this repo was built to answer:
-**`baseline+anyteleop` ranks first under all four algorithms.** That ordering is
-robust to the choice of architecture. Second versus third place flips between
-algorithms, so only the top position is trustworthy at these sample sizes
-(9-16 episodes per cell).
+**This matrix does NOT test the contact-aware hypothesis** — see *The
+hypothesis under test* above for the controlled comparison. The only
+contact-aware cell here is `contact_aware+vwj` at 9 episodes, so pipeline,
+retargeter and sample size all vary together; `baseline+anyteleop` ranking first
+says nothing about the pipeline. It is kept only as a per-architecture sanity
+check that the harness runs every cell.
 
 **Closed-loop success is 0% in every cell, and the cause is diagnosed.** It is
 not underfitting: fed demonstration observations, BC-RNN reproduces the
@@ -440,6 +517,7 @@ handil/
   train.py
 scripts/   extract_data.py · replay_demos.py · train_policy.py
            evaluate_policy.py · run_comparison.py
+           test_pipeline_hypothesis.py · test_pipeline_replay.py
 tests/
 ```
 
