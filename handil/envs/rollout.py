@@ -59,7 +59,9 @@ class PickPlaceEnv:
                  control_hz: float = 42.0, velocity_injection: bool = False,
                  scene_name: str = "robocasa", root=None,
                  active_object: int | str = 0, sequential: bool = True,
-                 action_space: str = "position"):
+                 action_space: str = "position", squeeze: bool = False,
+                 gamma: float = 5.0, fingers=("thumb", "index"),
+                 slip_correction: bool = True, root_for_grasp=None):
         import mujoco as mj
         self.mj = mj
         self.scene = scene if scene is not None else build_scene(scene_name, root=root)
@@ -72,6 +74,14 @@ class PickPlaceEnv:
             raise ValueError(f"action_space must be position|torque, got {action_space!r}")
         self.action_space = action_space
         self._tau_cmd = np.zeros(N_ROBOT)
+        # Internal-force squeeze. A P law can close the fingers but cannot press,
+        # so a contact-aware grasp is inexpressible without this. See
+        # handil/envs/grasp.py.
+        self.squeeze_enabled = bool(squeeze)
+        self._squeeze_cfg = dict(gamma=gamma, fingers=tuple(fingers),
+                                 slip_correction=slip_correction,
+                                 root=root_for_grasp)
+        self.squeeze = None
         # Demos are logged at ~42 Hz wall; the policy runs at that rate and each
         # control step is held for the matching number of 2 ms physics steps.
         self.n_substeps = max(1, int(round((1.0 / control_hz) / self.model.opt.timestep)))
@@ -96,7 +106,25 @@ class PickPlaceEnv:
                           for g in gids]
                       for i, gids in self._obj_col_gids.items()}
         self.set_active_object(active_object)
+        if self.squeeze_enabled:
+            self._build_squeeze()
         self.reset()
+
+    def _build_squeeze(self):
+        """Attach an internal-force controller to the ACTIVE object."""
+        from .grasp import SqueezeController
+        cfg = self._squeeze_cfg
+        bid = self.mj.mj_name2id(self.model, self.mj.mjtObj.mjOBJ_BODY,
+                                 self.scene.object_bodies[self.active_object])
+        gids = self._obj_col_gids[self.active_object]
+        kd = np.concatenate([np.full(N_ARM, 4.0),
+                             np.full(N_ROBOT - N_ARM, 0.05)])
+        self.squeeze = SqueezeController(
+            self.model, bid, self.kp, kd, fingers=cfg["fingers"],
+            gamma=cfg["gamma"], root=cfg["root"], obj_geom_ids=gids,
+            cone_mu=float(self.model.geom_friction[gids[0], 0]),
+            slip_correction=cfg["slip_correction"],
+            dt=float(self.model.opt.timestep))
 
     def set_active_object(self, which: int | str) -> int:
         """Choose which object is presented; the rest are stowed.
@@ -267,6 +295,8 @@ class PickPlaceEnv:
             for n in self.scene.object_bodies]
         self._target = self.data.qpos[:N_ROBOT].copy()
         self._tau_cmd = np.zeros(N_ROBOT)
+        if self.squeeze is not None:
+            self.squeeze.reset()
         return self.observe()
 
     def _settle_active(self, steps: int = 250):
@@ -392,6 +422,8 @@ class PickPlaceEnv:
             else:
                 tau[:N_ROBOT] = self.kp * (self._target
                                            - self.data.qpos[:N_ROBOT])
+            if self.squeeze is not None:
+                tau[:N_ROBOT] += self.squeeze.torques(self.data)
             np.clip(self.data.qvel[:N_ARM], -QVEL_ARM_MAX, QVEL_ARM_MAX,
                     out=self.data.qvel[:N_ARM])
             self.data.qfrc_applied[:] = tau

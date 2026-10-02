@@ -146,14 +146,47 @@ of the demonstrations diverges to 2-58 rad of arm error, so `action_space="torqu
 in `PickPlaceEnv` is correct for *executing a trained policy* (which re-reads
 state every step) but useless for replaying a recorded stream.
 
+### Internal-force squeeze in the env
+
+`PickPlaceEnv(squeeze=True, gamma=...)` adds the contact-aware squeeze, so a
+*position* policy can press rather than merely close. It **imports the source
+repo's own `GraspController`** rather than reimplementing the null-space
+allocation (`handil/envs/grasp.py`), taking only `internal_force_torques` +
+`slip_correction_torques` and leaving the position hold to the env's P law —
+exactly how `kinova_leap_pick_place.py` uses it in the teleop GRASP branch.
+
+Two deviations worth knowing: `grasp_control/__init__` is bypassed (it imports
+casadi via `constrained_ik`), and the contact frames come from **live**
+fingertip/object geometry rather than the recommender's stored `rec_local`, which
+is not in the logs. So it is a faithful internal-force controller, not a replay
+of one specific recommended grasp.
+
+**It works, and it is not sufficient.** Verified on contact-aware replay, gamma
+sweep on `obj_009_gelatin_box`:
+
+| gamma | peak force | max lift | touch frames |
+|---:|---:|---:|---:|
+| 0.5 | 2.9 N | 0.0001 m | 40 |
+| 2.0 | 3.0 N | 0.0009 m | 83 |
+| 5.0 | 2.4 N | 0.0069 m | 171 |
+| 10.0 | 7.1 N | 0.0088 m | 183 |
+
+Contact monotonically improves (40 → 183 frames, 4.6x) and so does lift, but it
+plateaus just under the 1 cm pick threshold. With the robot's kinematics pinned to
+the demonstration and gamma=20 the squeeze reaches **1210 N**, so the force
+authority is certainly there — it over-squeezes and shoves the object out
+(touch frames collapse to 4), against the demo's 168 N.
+
+The binding constraint is **reach, not grip**: replay closes to 0.197 m of
+hand-object distance where the demonstration reaches 0.145 m. Statically these
+objects need only 0.23-3.6 N per finger, so a 5 cm positioning error cannot be
+compensated by any amount of squeeze. Raising the ceiling further means improving
+open-loop position tracking, not grip force.
+
 ### What remains untested
 
-Task-level success for the contact-aware pipeline. The torque action space is the
-right label, but closing the loop still needs either a torque policy good enough
-to hold a grasp, or the source's `GraspController` internal-force and
-slip-correction torques ported into the env so a *position* policy can express a
-squeeze. Until then: the learnability evidence above stands, and contact-aware
-replay/rollout numbers are uninformative rather than negative.
+Task-level success for the contact-aware pipeline, now blocked on reach accuracy
+rather than on the missing squeeze. The learnability evidence above stands.
 
 ---
 
