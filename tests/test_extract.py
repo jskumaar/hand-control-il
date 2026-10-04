@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from handil.data.extract import (_active_object_index, _mat_to_quat,
+from handil.data.extract import (_trace_object_index, _mat_to_quat,
                                  _object_in_palm, _quat_to_mat)
 
 
@@ -68,7 +68,7 @@ def test_active_object_is_the_live_one_not_the_stowed_ones():
     oq[:, 9] = 0.86         # obj1 live on the counter
     oq[:, 16] = -360.0      # obj2 stowed
     oq[:, 23] = -210.0      # obj3 stowed
-    idx = _active_object_index({"obj_qpos": oq}, slice(0, n), "obj_x", None)
+    idx = _trace_object_index({"obj_qpos": oq}, slice(0, n), "obj_x", None)
     assert idx == 1
 
 
@@ -77,11 +77,11 @@ def test_active_object_falls_back_to_names_when_several_are_live():
     oq = np.zeros((n, 28))
     oq[:, 2] = oq[:, 9] = oq[:, 16] = oq[:, 23] = 0.86      # all live
     bodies = ["a", "b", "c", "d"]
-    assert _active_object_index({"obj_qpos": oq}, slice(0, n), "c", bodies) == 2
+    assert _trace_object_index({"obj_qpos": oq}, slice(0, n), "c", bodies) == 2
 
 
 def test_active_object_defaults_to_zero_without_data():
-    assert _active_object_index({}, slice(0, 4), "whatever", None) == 0
+    assert _trace_object_index({}, slice(0, 4), "whatever", None) == 0
 
 
 @pytest.mark.slow

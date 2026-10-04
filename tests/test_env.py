@@ -139,3 +139,60 @@ def test_static_hold_of_an_off_home_posture_converges(env):
         env.step(tgt)
     err = np.abs(env.data.qpos[:7] - tgt[:7])
     assert err.max() < 1e-6, f"per-joint error {err}"
+
+
+def test_set_active_object_by_name_selects_that_body(env):
+    """The bug this guards: obj_idx is in the TRACE's spawn frame, not the
+    scene's body order, and they disagree on 3 of the 4 ICRA objects. Passing an
+    index across that boundary activated the wrong object in replay_demos.py and
+    test_pipeline_replay.py. Always address by name.
+    """
+    for name in env.scene.object_bodies:
+        i = env.set_active_object(name)
+        assert env.scene.object_bodies[i] == name
+
+
+def test_trace_and_scene_object_frames_are_known_to_differ(env):
+    """Documents the mismatch so nobody 'simplifies' the name lookup away."""
+    if len(env.scene.object_bodies) < 4:
+        pytest.skip("not the 4-object ICRA scene")
+    # Spawn order recorded in the ICRA traces, measured from obj_qpos.
+    trace_order = ["obj_036_wood_block", "obj_017_orange",
+                   "obj_025_mug", "obj_009_gelatin_box"]
+    if set(trace_order) != set(env.scene.object_bodies):
+        pytest.skip("different object set")
+    assert env.scene.object_bodies != trace_order, (
+        "frames now agree; the name-based lookup is still correct but the "
+        "warning comments can be revisited")
+
+
+def test_env_and_dataset_observations_agree_on_the_v2_fields(env):
+    """The contract that broke twice: dataset build_obs and env observe() must
+    produce identical object conditioning for the same object.
+
+    Guards both the obj_in_palm slicing bug and the trace-vs-scene index bug.
+    """
+    import json
+    from pathlib import Path
+    from handil.data.schema import obs_slice
+
+    data = Path("data/v2")
+    if not (data / "manifest.json").exists():
+        pytest.skip("data/v2 not extracted")
+    eps = json.loads((data / "manifest.json").read_text())["episodes"]
+
+    checked = set()
+    for e in eps:
+        if e["obj"] in checked or e["obj"] not in env.scene.object_bodies:
+            continue
+        checked.add(e["obj"])
+        ds_obs = np.load(data / f"{e['episode_id']}.npz", allow_pickle=True)["obs"]
+        env.set_active_object(e["obj"])
+        env_obs = env.reset()
+        for field in ("obj_id_onehot", "obj_size", "obj_mass"):
+            sl = obs_slice(field)
+            np.testing.assert_allclose(
+                env_obs[sl], ds_obs[0][sl], atol=1e-6,
+                err_msg=f"{field} differs for {e['obj']}")
+    assert len(checked) >= 2, "no comparable objects found"
+    env.set_active_object(0)

@@ -16,6 +16,7 @@ import numpy as np
 
 from handil.data import logs as L
 from handil.data.extract import extract_run
+from handil.data.schema import SCHEMA_VERSION
 from handil.envs.scene import build_scene
 
 
@@ -40,6 +41,14 @@ def main() -> int:
                          "for the contact-aware GRASP phase (its PD gains are not "
                          "logged, so its position target is unrecoverable).")
     ap.add_argument("--min-steps", type=int, default=20)
+    ap.add_argument("--include-ablations", action="store_true",
+                    help="keep the solref/mass sweep runs. Off by default: the "
+                         "env cannot reproduce their scaled mass/friction, so "
+                         "the obj_mass observation channel would mismatch.")
+    ap.add_argument("--all-objects", action="store_true",
+                    help="keep non-ICRA objects too (they have no one-hot slot)")
+    ap.add_argument("--any-object-count", action="store_true",
+                    help="keep 1- and 5-object scenes as well as the 4-object one")
     ap.add_argument("--limit", type=int, default=None, help="first N runs only")
     args = ap.parse_args()
 
@@ -80,6 +89,10 @@ def main() -> int:
                               outcomes=tuple(args.outcomes),
                               jnt_limited=jnt_limited,
                               action_space=args.action_space,
+                              icra_only=not args.all_objects,
+                              nominal_only=not args.include_ablations,
+                              require_n_objects=(None if args.any_object_count
+                                                 else 4),
                               min_steps=args.min_steps,
                               object_bodies=scene.object_bodies)
         except Exception as e:
@@ -93,6 +106,7 @@ def main() -> int:
         "n_episodes": len(metas),
         "outcomes_kept": args.outcomes,
         "scene": args.scene,
+        "schema_version": SCHEMA_VERSION,
         "action_space": args.action_space,
         "kp_arm": scene.kp_arm.tolist(),
         "episodes": [asdict(m) for m in metas],

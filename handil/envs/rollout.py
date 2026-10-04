@@ -25,7 +25,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..data.schema import N_ARM, N_ROBOT, OBS_DIM
+from ..data.schema import (N_ARM, N_ROBOT, OBJ_MASS, OBJ_SIZE, OBS_DIM,
+                           obj_onehot)
 from .scene import (SEQ_SPAWN_XY, STOW_Z, Scene, build_scene, home_qpos)
 
 QVEL_ARM_MAX = 4.0        # rad/s, matches the source safety clamp
@@ -332,7 +333,7 @@ class PickPlaceEnv:
         mj.mj_forward(self.model, self.data)
 
     def observe(self, obj_idx: int | None = None) -> np.ndarray:
-        """Pack the same 68-d observation the dataset uses.
+        """Pack the same observation the dataset uses (OBS_DIM, schema v2).
 
         Defaults to the ACTIVE object. Defaulting to index 0 instead would
         silently measure against a stowed object parked below the floor,
@@ -360,9 +361,19 @@ class PickPlaceEnv:
             obj_q = qr
 
         nf, tf = self._finger_forces(obj_idx)
+        # Schema v2 object conditioning + task-stage proxy. Keyed on the object
+        # NAME so it matches the dataset exactly; see data/schema.py.
+        name = self.scene.object_bodies[obj_idx]
+        from ..data.extract import TOUCH_FORCE_N
         return np.concatenate([
             q[:N_ARM], q[N_ARM:], qd[:N_ARM], qd[N_ARM:],
-            obj_p, obj_q, palm_p, palm_q, nf, tf]).astype(np.float64)
+            obj_p, obj_q, palm_p, palm_q, nf, tf,
+            obj_onehot(name),
+            OBJ_SIZE.get(name, (0.0, 0.0, 0.0)),
+            [OBJ_MASS.get(name, 0.0)],
+            [self.object_height_above_rest(obj_idx)],
+            [float(nf.sum() > TOUCH_FORCE_N)],
+        ]).astype(np.float64)
 
     def _finger_forces(self, obj_idx: int) -> tuple[np.ndarray, np.ndarray]:
         """Per-finger normal/tangential contact force, order thumb,index,mf,rf."""

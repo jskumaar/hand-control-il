@@ -47,7 +47,10 @@ def main() -> int:
     for e in eps:
         d = np.load(args.data / f"{e['episode_id']}.npz", allow_pickle=True)
         env = PickPlaceEnv(scene=scene, kp_hand=e["kp_hand"],
-                           active_object=e["obj_idx"])
+                           # By NAME, never e["obj_idx"]: that index is in the
+                           # log trace's spawn frame, which differs from the
+                           # scene's body order for 3 of the 4 ICRA objects.
+                           active_object=e["obj"])
         r = replay_episode(env, d["action"], obs_ref=d["obs"], t=d["t"],
                            episode_id=e["episode_id"], obj=e["obj"])
         rows.append({**asdict(r), "method_key": e["method_key"]})

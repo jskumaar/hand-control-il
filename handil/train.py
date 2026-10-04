@@ -165,6 +165,10 @@ def train(cfg: TrainConfig) -> dict:
 def load_policy(run_dir: Path, device: str = "cpu"):
     ck = torch.load(Path(run_dir) / "best.pt", map_location=device,
                     weights_only=False)
+    if ck.get("obs_dim") != OBS_DIM:
+        raise SystemExit(
+            f"{run_dir} was trained with obs_dim={ck.get('obs_dim')} but this "
+            f"code is at {OBS_DIM}. Retrain against the current schema.")
     p = build(ck["algo"], obs_dim=ck["obs_dim"], act_dim=ck["act_dim"],
               **ck.get("algo_kwargs", {}))
     p.load_state_dict(ck["state_dict"])
