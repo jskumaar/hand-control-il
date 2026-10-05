@@ -396,11 +396,26 @@ scores the result. That is the ceiling for any learned policy here, and it
 separates "the policy is weak" from "the env is wrong" — a distinction that is
 otherwise very easy to misread.
 
-Across all 44 ICRA episodes it currently reaches **20% pick / 14% success**,
-and **38% pick / 31% success** on the best-represented method
-(`baseline+anyteleop`, n=16). Palm position now tracks the demonstrations to
-**1.4–2.1 cm p95**, and on several episodes the replay's closest hand-object
-approach matches the log to within a millimetre.
+> **Earlier numbers here were wrong.** They were measured with a trace-frame
+> object index passed into a scene-frame parameter, so 3 of 4 objects were
+> replayed against the *wrong object*. Fixed (address by name); remeasured below.
+
+On the 93-episode nominal-only v2 dataset: **16% pick / 11% success** overall,
+and **50% pick / 50% success** on `baseline+anyteleop` (n=16). Palm position
+tracks the demonstrations to **1.4–2.1 cm p95**.
+
+The per-pipeline split tracks **GRASP-repair fraction**, not pipeline quality:
+
+| method | GRASP repair | min \|obj_in_palm\| | max lift | success |
+|---|---:|---:|---:|---:|
+| `baseline+anyteleop` | 0% | 0.139 m | 0.109 m | **50%** |
+| `baseline+vwj` | 0% | 0.142 m | 0.072 m | 15% |
+| `contact_aware+anyteleop` | 47% | 0.270 m | 0.000 m | 0% |
+| `contact_aware+vwj` | 59% | 0.178 m | 0.003 m | 0% |
+
+Every cell needing repaired finger targets fails; every cell with 0% repair
+succeeds. Replay therefore still **cannot** adjudicate the contact-aware
+pipeline — its labels, not its data, are what replay cannot execute.
 
 It is still well below 100% for a structural reason: replay is open-loop, so a
 40-second contact-rich manipulation has no feedback to correct residual

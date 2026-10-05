@@ -11,7 +11,7 @@ from handil.train import TrainConfig, train
 
 import os
 DATA = os.environ.get("HANDIL_DATA", "data/icra_all")
-N_EPS = 60          # both cells have >= 63
+N_EPS = 16          # the smaller cell (baseline+anyteleop) has 16 at v2
 SEEDS = (0, 1, 2)
 ALGOS = ("bc_mlp", "bc_rnn")
 
@@ -23,7 +23,7 @@ for algo in ALGOS:
                 algo=algo, data_dir=DATA,
                 out_dir=f"runs/{os.environ.get('HANDIL_TAG','pipe')}/{algo}_{pipe}_s{seed}",
                 pipeline=pipe, retargeter="anyteleop",
-                exclude_ablations=False, max_episodes=N_EPS,
+                exclude_ablations=True, max_episodes=N_EPS,
                 epochs=60, seed=seed)
             s = train(cfg)
             rows.append(dict(algo=algo, pipeline=pipe, seed=seed,
