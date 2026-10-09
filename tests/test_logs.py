@@ -68,3 +68,38 @@ def test_read_events_skips_malformed_lines(tmp_path):
     p = tmp_path / "events.jsonl"
     p.write_text('{"event": "a"}\nnot json\n\n{"event": "b"}\n')
     assert [e["event"] for e in read_events(p)] == ["a", "b"]
+
+
+def test_phase_per_row_fills_from_event_marks():
+    """The trace's own phase column omits PICK for baseline modes; the event
+    stream has it. Reconstruct from events so every mode is annotated alike."""
+    import numpy as np
+    from handil.data.logs import phase_per_row
+
+    ev = [
+        {"event": "phase_enter", "trial_id": 1, "t_wall": 100.0, "phase": "PICK"},
+        {"event": "phase_enter", "trial_id": 1, "t_wall": 200.0, "phase": "TRANSPORT"},
+        {"event": "phase_enter", "trial_id": 1, "t_wall": 300.0, "phase": "PLACE"},
+        # another trial's marks must not leak in
+        {"event": "phase_enter", "trial_id": 2, "t_wall": 150.0, "phase": "PLACE"},
+        {"event": "trial_start", "trial_id": 1, "t_wall": 50.0},
+    ]
+    t = np.array([50.0, 99.0, 100.0, 199.0, 250.0, 310.0])
+    got = phase_per_row(ev, 1, t)
+    assert list(got) == ["APPROACH", "APPROACH", "PICK", "PICK",
+                         "TRANSPORT", "PLACE"]
+
+
+def test_phase_per_row_defaults_without_marks():
+    import numpy as np
+    from handil.data.logs import phase_per_row
+    got = phase_per_row([], 1, np.arange(5.0))
+    assert set(got) == {"APPROACH"}
+
+
+def test_phase_per_row_ignores_unknown_phase_names():
+    import numpy as np
+    from handil.data.logs import phase_per_row
+    ev = [{"event": "phase_enter", "trial_id": 1, "t_wall": 1.0, "phase": "BOGUS"}]
+    got = phase_per_row(ev, 1, np.arange(3.0))
+    assert set(got) == {"APPROACH"}
