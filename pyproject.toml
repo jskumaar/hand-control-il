@@ -25,6 +25,9 @@ dev = ["pytest>=8.0"]
 cuda = ["torch>=2.8"]
 # Plotting / table generation for the comparison report.
 analysis = ["matplotlib>=3.8", "pandas>=2.0"]
+# Video recording of rollouts. imageio-ffmpeg bundles its own ffmpeg, so this
+# needs no system package (unlike cv2, which the source repo's SceneRecorder uses).
+video = ["imageio>=2.34", "imageio-ffmpeg>=0.4"]
 
 [build-system]
 requires = ["hatchling"]

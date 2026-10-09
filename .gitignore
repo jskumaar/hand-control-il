@@ -14,3 +14,4 @@ uv.lock
 
 # MuJoCo
 MUJOCO_LOG.TXT
+videos/

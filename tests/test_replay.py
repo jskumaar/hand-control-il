@@ -78,3 +78,32 @@ def test_replay_tracks_the_active_object_not_object_zero(env):
     r = replay_episode(env, np.tile(home_qpos(), (10, 1)), extra_steps=0)
     env.set_active_object(0)
     assert r.min_obj_in_palm < 2.0, r.min_obj_in_palm
+
+
+def test_recorder_writes_playable_video(env, tmp_path):
+    """Recording must produce a real MP4, and must not be load-bearing."""
+    from handil.envs.scene import home_qpos
+    from handil.eval import RolloutRecorder
+
+    env.reset()
+    rec = RolloutRecorder(env.model, tmp_path, "t", size=(160, 120), fps=30)
+    if not rec.enabled:
+        pytest.skip("no GL context / encoder available")
+    home = home_qpos()
+    for _ in range(30):
+        env.step(home)
+        rec.capture(env.data)
+    info = rec.close()
+    assert info.n_frames > 0
+    assert set(info.paths) <= {"overview", "wrist"}
+    for p in info.paths.values():
+        assert p.exists() and p.stat().st_size > 1000
+
+
+def test_recorder_with_no_valid_camera_disables_itself(env, tmp_path):
+    """Best-effort: a bad camera name must not raise."""
+    from handil.eval import RolloutRecorder
+    rec = RolloutRecorder(env.model, tmp_path, "t", cameras=("nope",))
+    assert not rec.enabled
+    rec.capture(env.data)          # must be a no-op, not a crash
+    assert rec.close().n_frames == 0
