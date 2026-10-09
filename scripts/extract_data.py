@@ -40,6 +40,12 @@ def main() -> int:
                          "which needs no inversion and is the only faithful label "
                          "for the contact-aware GRASP phase (its PD gains are not "
                          "logged, so its position target is unrecoverable).")
+    ap.add_argument("--phase-onehot", action="store_true",
+                    help="append a 4-d phase one-hot to the observation. OFF by "
+                         "default: the real phase machine is stateful (dwell "
+                         "timers) so the rollout env cannot reproduce it, and "
+                         "TRANSPORT ~ 'you already grasped successfully', which a "
+                         "policy leans on in training and never earns at rollout.")
     ap.add_argument("--min-steps", type=int, default=20)
     ap.add_argument("--include-ablations", action="store_true",
                     help="keep the solref/mass sweep runs. Off by default: the "
@@ -89,6 +95,7 @@ def main() -> int:
                               outcomes=tuple(args.outcomes),
                               jnt_limited=jnt_limited,
                               action_space=args.action_space,
+                              extras=(("phase_onehot",) if args.phase_onehot else ()),
                               icra_only=not args.all_objects,
                               nominal_only=not args.include_ablations,
                               require_n_objects=(None if args.any_object_count
@@ -107,6 +114,7 @@ def main() -> int:
         "outcomes_kept": args.outcomes,
         "scene": args.scene,
         "schema_version": SCHEMA_VERSION,
+        "obs_extras": (["phase_onehot"] if args.phase_onehot else []),
         "action_space": args.action_space,
         "kp_arm": scene.kp_arm.tolist(),
         "episodes": [asdict(m) for m in metas],

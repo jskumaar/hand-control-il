@@ -12,7 +12,8 @@ from torch.utils.data import DataLoader, random_split
 
 from .algos import build
 from .data.dataset import (EpisodeStore, Normalizer, SequenceDataset,
-                           TransitionDataset, load_manifest, select)
+                           TransitionDataset, load_manifest, manifest_obs_dim,
+                           select)
 from .data.schema import ACT_DIM, OBS_DIM
 
 
@@ -82,7 +83,10 @@ def make_datasets(cfg: TrainConfig):
     store = EpisodeStore(data_dir, eps)
     norm = store.fit_normalizer()
 
-    probe = build(cfg.algo, obs_dim=OBS_DIM, act_dim=ACT_DIM,
+    # Width comes from the dataset, not a constant: opt-in blocks such as
+    # phase_onehot widen it, and the checkpoint records what it was trained at.
+    dim = manifest_obs_dim(data_dir)
+    probe = build(cfg.algo, obs_dim=dim, act_dim=ACT_DIM,
                   **(cfg.algo_kwargs or {}))
     if probe.horizon > 1 or probe.chunk > 1:
         ds = SequenceDataset(store, norm, horizon=probe.horizon, chunk=probe.chunk)
@@ -90,7 +94,7 @@ def make_datasets(cfg: TrainConfig):
         ds = TransitionDataset(store, norm)
     if len(ds) == 0:
         raise SystemExit("dataset is empty after windowing; lower horizon/chunk")
-    return ds, norm, eps, probe
+    return ds, norm, eps, probe, dim
 
 
 def train(cfg: TrainConfig) -> dict:
@@ -99,7 +103,7 @@ def train(cfg: TrainConfig) -> dict:
     dev = cfg.resolved_device()
 
     print(f"  device: {cfg.device_note()}")
-    ds, norm, eps, policy = make_datasets(cfg)
+    ds, norm, eps, policy, dim = make_datasets(cfg)
     n_val = max(1, int(len(ds) * cfg.val_frac))
     tr, va = random_split(ds, [len(ds) - n_val, n_val],
                           generator=torch.Generator().manual_seed(cfg.seed))
@@ -150,7 +154,7 @@ def train(cfg: TrainConfig) -> dict:
             best = va_loss
             torch.save({"state_dict": policy.state_dict(), "algo": cfg.algo,
                         "algo_kwargs": cfg.algo_kwargs or {},
-                        "obs_dim": OBS_DIM, "act_dim": ACT_DIM},
+                        "obs_dim": dim, "act_dim": ACT_DIM},
                        out / "best.pt")
         if ep % max(1, cfg.epochs // 20) == 0 or ep == cfg.epochs - 1:
             print(f"  epoch {ep:4d}  train {tr_loss:.5f}  val {va_loss:.5f}")
@@ -162,13 +166,18 @@ def train(cfg: TrainConfig) -> dict:
     return summary
 
 
-def load_policy(run_dir: Path, device: str = "cpu"):
+def load_policy(run_dir: Path, device: str = "cpu", expect_dim: int | None = None):
     ck = torch.load(Path(run_dir) / "best.pt", map_location=device,
                     weights_only=False)
-    if ck.get("obs_dim") != OBS_DIM:
+    # The checkpoint records the width it was trained at, which may include
+    # opt-in blocks (e.g. phase_onehot). Build at that width, and only complain
+    # if it disagrees with what the caller is about to feed it.
+    got = ck.get("obs_dim")
+    want = expect_dim if expect_dim is not None else got
+    if got != want:
         raise SystemExit(
-            f"{run_dir} was trained with obs_dim={ck.get('obs_dim')} but this "
-            f"code is at {OBS_DIM}. Retrain against the current schema.")
+            f"{run_dir} was trained with obs_dim={got} but will be fed "
+            f"{want}-wide observations. Retrain, or point at the matching dataset.")
     p = build(ck["algo"], obs_dim=ck["obs_dim"], act_dim=ck["act_dim"],
               **ck.get("algo_kwargs", {}))
     p.load_state_dict(ck["state_dict"])

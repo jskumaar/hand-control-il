@@ -111,6 +111,34 @@ artifact:
 - The contact-aware grasp *is* an internal-force controller, which the rollout
   env does not implement at all.
 
+### Settled empirically: the phase one-hot buys nothing
+
+`--phase-onehot` appends a 4-d phase one-hot (APPROACH/PICK/TRANSPORT/PLACE) as
+an opt-in block, so the dataset is a strict superset. A/B over 3 seeds, 16
+episodes/cell:
+
+| observation | algo | baseline | contact_aware | ratio |
+|---|---|---|---|---|
+| 78-d (default) | BC-MLP | 0.00538 ± 0.00035 | 0.00265 ± 0.00005 | **2.03×** |
+| 82-d (+phase) | BC-MLP | 0.00522 ± 0.00033 | 0.00269 ± 0.00009 | **1.94×** |
+| 78-d (default) | BC-RNN | 0.00171 ± 0.00002 | 0.00167 ± 0.00025 | 1.02× |
+| 82-d (+phase) | BC-RNN | 0.00166 ± 0.00006 | 0.00164 ± 0.00027 | 1.01× |
+
+Every difference is inside the seed spread, and the contact-aware conclusion is
+identical either way. So the default stays the two **stateless** dims
+(`height_above_rest`, `hand_touching`), which the rollout env can reproduce
+exactly — the one-hot cannot, since the real phase machine carries dwell timers
+(`DWELL_S = 1.0 s`, `ARRIVAL_DWELL_S = 0.5 s`) that `observe()` has no state for.
+
+Worth knowing how *partial* those two dims are, measured against the now-correct
+labels: they carry **46%** of the phase label's information binarised (58% with
+height finely binned), and the best achievable 3-class accuracy from them is
+**78.5%** against a 39.7% majority baseline. The failure is specifically
+PICK-vs-TRANSPORT — PICK includes *failed* attempts, where the object is lifted
+then dropped, which is instantaneously identical to a TRANSPORT row with the
+object momentarily airborne. That distinction is history, not state. The A/B
+shows the policy does not need it.
+
 ### Learning the torque directly instead
 
 The GRASP-phase position target is unrecoverable, but the **torque is logged

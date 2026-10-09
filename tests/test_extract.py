@@ -130,3 +130,41 @@ def test_palm_frame_reconstruction_matches_the_source_exactly():
             assert min(errs) < 1e-4, f"{Path(path).parent.name}: {min(errs):.6f} m"
             return
     pytest.skip("no run had both logged obj_in_palm and the needed fields")
+
+
+def test_phase_onehot_is_a_strict_superset():
+    """An opt-in block must append, leaving every fixed field's slice valid."""
+    from handil.data.extract import build_obs
+    from handil.data.schema import OBS_DIM, obs_dim, obs_slice
+
+    n = 12
+    tr = {
+        "qpos": np.zeros((n, 51)), "qvel": np.zeros((n, 47)),
+        "obj_qpos": np.zeros((n, 28)), "xpos": np.zeros((n, 37, 3)),
+        "xquat": np.tile([1.0, 0, 0, 0], (n, 37, 1)),
+        "norm_force": np.zeros((n, 4)), "tan_force": np.zeros((n, 4)),
+    }
+    tr["obj_qpos"][:, 2] = 0.86
+    tr["obj_qpos"][:, 3] = 1.0
+    phase = np.array(["APPROACH"] * 4 + ["PICK"] * 4 + ["TRANSPORT"] * 4)
+
+    base = build_obs(tr, slice(0, n), 9, obj_idx=0, obj_name="obj_025_mug")
+    wide = build_obs(tr, slice(0, n), 9, obj_idx=0, obj_name="obj_025_mug",
+                     phase=phase, extras=("phase_onehot",))
+
+    assert base.shape == (n, OBS_DIM)
+    assert wide.shape == (n, obs_dim(("phase_onehot",)))
+    np.testing.assert_allclose(wide[:, :OBS_DIM], base, equal_nan=True)
+    # the appended block is a valid one-hot
+    blk = wide[:, OBS_DIM:]
+    np.testing.assert_allclose(blk.sum(1), 1.0)
+    assert blk[0].argmax() == 0 and blk[4].argmax() == 1 and blk[8].argmax() == 2
+
+
+def test_phase_onehot_zero_fills_without_a_phase_array():
+    from handil.data.extract import build_obs
+    from handil.data.schema import OBS_DIM
+    n = 5
+    tr = {"qpos": np.zeros((n, 51)), "qvel": np.zeros((n, 47))}
+    w = build_obs(tr, slice(0, n), None, obj_name="x", extras=("phase_onehot",))
+    np.testing.assert_allclose(w[:, OBS_DIM:], 0.0)
