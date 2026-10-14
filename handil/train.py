@@ -42,6 +42,10 @@ class TrainConfig:
     horizon: int = 10
     chunk: int = 16
     algo_kwargs: dict = None
+    # DART-style noise injection (handil/data/dart.py). 0 copies = off.
+    dart_copies: int = 0
+    dart_sigma_arm: float = 0.05
+    dart_sigma_hand: float = 0.0
 
     def resolved_device(self) -> str:
         if self.device != "auto":
@@ -81,6 +85,17 @@ def make_datasets(cfg: TrainConfig):
         eps = [eps[i] for i in sorted(idx)]
 
     store = EpisodeStore(data_dir, eps)
+    if cfg.dart_copies > 0:
+        from .data.dart import augment_store
+        n_before = sum(o.shape[0] for o in store.obs)
+        augment_store(store, sigma_arm=cfg.dart_sigma_arm,
+                      sigma_hand=cfg.dart_sigma_hand,
+                      n_copies=cfg.dart_copies, seed=cfg.seed)
+        n_after = sum(o.shape[0] for o in store.obs)
+        print(f"  DART: {n_before} -> {n_after} rows "
+              f"({cfg.dart_copies} copies, sigma_arm={cfg.dart_sigma_arm})")
+    # Normaliser is fitted AFTER augmentation so its std reflects the widened
+    # state distribution the policy will actually be trained on.
     norm = store.fit_normalizer()
 
     # Width comes from the dataset, not a constant: opt-in blocks such as

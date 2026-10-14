@@ -271,10 +271,29 @@ class PickPlaceEnv:
         self.data.qpos[qa:qa + 2] = SEQ_SPAWN_XY
         self.data.qpos[qa + 3:qa + 7] = [1.0, 0.0, 0.0, 0.0]
 
-    def reset(self) -> np.ndarray:
+    def reset(self, arm_jitter: float = 0.0, object_jitter: float = 0.0,
+              rng: np.random.Generator | None = None) -> np.ndarray:
+        """Reset to the home pose, optionally jittered.
+
+        Every demonstration starts from a bit-identical home pose (zero spread
+        across all 7 arm joints), which is the measured root cause of BC's
+        closed-loop failure here: the policy has seen one path through state
+        space and no recovery states. `arm_jitter` (rad) and `object_jitter` (m)
+        exist to EVALUATE whether a policy generalises off that single start, and
+        to let a future data-collection run vary it.
+        """
         mj = self.mj
+        rng = rng or np.random.default_rng()
         mj.mj_resetData(self.model, self.data)
-        self.data.qpos[:N_ROBOT] = home_qpos()
+        q0 = home_qpos()
+        if arm_jitter > 0:
+            q0 = q0.copy()
+            q0[:N_ARM] += rng.normal(0.0, arm_jitter, N_ARM)
+            lo = self.model.jnt_range[:N_ARM, 0]
+            hi = self.model.jnt_range[:N_ARM, 1]
+            b = self._bounded[:N_ARM]
+            q0[:N_ARM][b] = np.clip(q0[:N_ARM][b], lo[b], hi[b])
+        self.data.qpos[:N_ROBOT] = q0
         self.data.qvel[:] = 0.0
         self.data.qacc[:] = 0.0
         self.data.qfrc_applied[:] = 0.0
@@ -285,6 +304,9 @@ class PickPlaceEnv:
                 if i != self.active_object:
                     self._stow(i)
             self._activate(self.active_object)
+            if object_jitter > 0:
+                qa = self.scene.object_qadr[self.active_object]
+                self.data.qpos[qa:qa + 2] += rng.normal(0.0, object_jitter, 2)
             mj.mj_forward(self.model, self.data)
             # Drop the active object onto the counter, as place_on_surface does.
             self._settle_active()

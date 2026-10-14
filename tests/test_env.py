@@ -196,3 +196,29 @@ def test_env_and_dataset_observations_agree_on_the_v2_fields(env):
                 err_msg=f"{field} differs for {e['obj']}")
     assert len(checked) >= 2, "no comparable objects found"
     env.set_active_object(0)
+
+
+def test_reset_jitter_spreads_the_start_pose(env):
+    """Every demo starts from a bit-identical home pose; jitter exists to test
+    whether a policy generalises off it, and for future varied collection."""
+    import numpy as np
+    rng = np.random.default_rng(0)
+    poses = []
+    for _ in range(8):
+        env.reset(arm_jitter=0.05, rng=rng)
+        poses.append(env.data.qpos[:7].copy())
+    spread = np.array(poses).std(0)
+    assert (spread > 0.005).all(), spread
+    assert np.isfinite(env.data.qpos).all()
+
+
+def test_reset_without_jitter_is_deterministic(env):
+    """Zero jitter must reproduce the demonstrated start, so existing results
+    stay comparable. (A ~1e-4 rad residual comes from the object-settling
+    steps, which predate the jitter option.)"""
+    import numpy as np
+    from handil.envs.scene import home_qpos
+    a = env.reset().copy()
+    b = env.reset(arm_jitter=0.0).copy()
+    np.testing.assert_allclose(a, b, atol=1e-3)
+    np.testing.assert_allclose(env.data.qpos[:7], home_qpos()[:7], atol=1e-3)

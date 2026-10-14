@@ -37,6 +37,14 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="auto")
+    ap.add_argument("--dart-copies", type=int, default=0,
+                    help="DART noise-injected copies per episode (0 = off)")
+    ap.add_argument("--dart-sigma-arm", type=float, default=0.05,
+                    help="rad of Gaussian noise on the arm joint block")
+    ap.add_argument("--dart-sigma-hand", type=float, default=0.0,
+                    help="rad on the finger block. 0 by default: hand labels "
+                         "are not consistent across demos, so a synthetic "
+                         "finger target is not well-defined.")
     ap.add_argument("--horizon", type=int, default=None)
     ap.add_argument("--chunk", type=int, default=None)
     args = ap.parse_args()
@@ -55,7 +63,9 @@ def main() -> int:
         exclude_ablations=not args.include_ablations,
         max_episodes=args.max_episodes,
         epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
-        seed=args.seed, device=args.device, algo_kwargs=algo_kwargs)
+        seed=args.seed, device=args.device, algo_kwargs=algo_kwargs,
+        dart_copies=args.dart_copies, dart_sigma_arm=args.dart_sigma_arm,
+        dart_sigma_hand=args.dart_sigma_hand)
 
     print(f"algo={cfg.algo}")
     print(f"selection: pipeline={cfg.pipeline} retargeter={cfg.retargeter} "
