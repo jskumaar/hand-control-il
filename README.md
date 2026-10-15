@@ -287,6 +287,50 @@ under-commitment is fixed; success is not.
    than a demo replay's 0.185 m — so reach was never that policy's binding
    constraint. Do not read the `reach` column as a distance-to-grasp.
 
+### ACT on delta actions: drift essentially solved, success still 0%
+
+| space | chunk | DART | val | drift@50 | drift@200 | success |
+|---|---:|---:|---:|---:|---:|---:|
+| delta | 8 | 0 | 0.05038 | **0.25** | 1.26 | 0% |
+| delta | 8 | 4 | 0.03204 | 0.34 | **0.82** | 0% |
+| delta | 16 | 4 | 0.02842 | 0.25 | 1.06 | 0% |
+| delta | 32 | 4 | 0.02907 | 0.26 | 3.06 | 0% |
+| *position BC (reference)* | 1 | 0 | 0.00171 | *3.12* | *2.35* | 0% |
+
+**drift@50 falls 3.12 → 0.25 rad, a 12× improvement**, and chunk 8 + DART gives
+the best long-horizon number. Success does not budge.
+
+#### The decisive measurement
+
+Drift is no longer the problem, so the obstruction is elsewhere. Measured on the
+best ACT policy over 400 steps:
+
+| | ACT delta k8+DART | demo replay |
+|---|---|---|
+| closest fingertip–object distance | **0.347 m** | 0.019–0.143 m |
+| frames in contact | **0 / 400** | 297–887 |
+| peak finger force | **0.00 N** | 20–1311 N |
+| object displacement | **0.0000 m** | lifts 0.095–0.175 m |
+
+The policy **never arrives at the object** — zero contacts, zero force, object
+never moves. Demo replays in the same env reach 1.9–14.3 cm with hundreds of
+contact frames, so the environment and the grasp criteria are not what is
+blocking it.
+
+This also refutes an intermediate hypothesis of mine. The finger labels really
+are degraded — the squeeze margin is 0.002 rad median, and 46% of contact-aware
+rows have GRASP-repaired finger targets (`qpos[t+1]`, i.e. "follow where the
+finger already went", which can track a closing hand but never command one). But
+adding the internal-force squeeze at rollout changed nothing (`max_h` exactly
+0.0000 at gamma 0, 5 and 15), because the hand is never near the object for a
+squeeze to act on. **The hand is not the binding constraint; arriving is.**
+
+So the honest summary after six interventions: drift is fixed 12×, under-commitment
+is fixed, the shortcut is removed, and the policy still does not traverse the
+~40 cm from its start pose to the object. That is the single remaining question,
+and it is not explained by coverage, parameterisation, chunking, recovery data,
+start-pose variation, or grip authority.
+
 ### What remains untested
 
 Task-level success for the contact-aware pipeline. Both candidate fixes are now
