@@ -36,6 +36,10 @@ class TrainConfig:
     lr: float = 1e-4
     weight_decay: float = 1e-4
     val_frac: float = 0.1
+    # K-fold over episodes instead of one held-out split. 0 = single split.
+    # Strongly recommended: a single split holds out 1-2 episodes, so the loss
+    # mostly reports WHICH episode that was (spread of 10-50x).
+    n_folds: int = 0
     seed: int = 0
     device: str = "auto"
     num_workers: int = 0
