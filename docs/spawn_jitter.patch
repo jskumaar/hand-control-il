@@ -1,0 +1,49 @@
+diff --git a/kinova_leap_pick_place.py b/kinova_leap_pick_place.py
+index 53b5132..d8772a5 100644
+--- a/kinova_leap_pick_place.py
++++ b/kinova_leap_pick_place.py
+@@ -238,6 +238,17 @@ if __name__ == "__main__":
+         help="RNG seed for object randomization — the same seed reproduces the same "
+              "layout (positions and sizes). Default: fresh entropy every run. "
+              "Ignored with --no-randomize.")
++    _arg_parser.add_argument(
++        '--spawn-jitter', type=float, default=0.0, metavar='M',
++        help="Metres of uniform XY jitter applied ONCE PER RUN to the "
++             "--sequential-spawn point, drawn from --seed. Every trial in the run "
++             "still presents its object at the same place (the four objects differ, "
++             "so within-run variation is not needed), but different runs place them "
++             "differently. Measured motivation: object start positions currently vary "
++             "0.038-0.075 m BETWEEN runs purely as config drift and 0.0000 m within a "
++             "run, so the dataset is neither a clean fixed-position set nor varied "
++             "enough to teach where to reach. 0.05 keeps every object inside the "
++             "reachable envelope (x in [-0.55, 0.55], y in [-0.075, 0.575]).")
+     _arg_parser.add_argument(
+         '--hand-self-collision', action='store_true',
+         help="Re-enable LEAP hand self-collision (finger↔finger, finger↔palm contact "
+@@ -1372,6 +1426,26 @@ if __name__ == "__main__":
+     SEQ_SPAWN_XY = [-0.20, 0.45]
+     if _SEQ_SPAWN:
+         _seq_spawn_xy = list(SEQ_SPAWN_XY)
++        # Per-RUN spawn offset (--spawn-jitter). Drawn once here, not per trial:
++        # within a run the four objects already differ, so what the dataset lacks
++        # is variation BETWEEN runs. Seeded from --seed so a run is reproducible,
++        # and clamped to the counter's reachable envelope.
++        if args.spawn_jitter > 0.0:
++            _sj_rng = np.random.default_rng(args.seed)
++            _sj = _sj_rng.uniform(-args.spawn_jitter, args.spawn_jitter, 2)
++            # Clamp to the envelope real successful demos actually occupy:
++            # measured over 93 of them, x in [-0.351, -0.200], y in [0.350,
++            # 0.550], i.e. 0.61-0.76 m from base_link. (The layout comment's
++            # "0.30-0.42 m from the base" predates the robocasa counter and the
++            # sequential spawner -- it is stale for this configuration.)
++            _seq_spawn_xy = [
++                float(np.clip(SEQ_SPAWN_XY[0] + _sj[0], -0.36, -0.12)),
++                float(np.clip(SEQ_SPAWN_XY[1] + _sj[1], 0.34, 0.56)),
++            ]
++            print(f"[spawn-jitter] this run presents objects at "
++                  f"[{_seq_spawn_xy[0]:+.3f}, {_seq_spawn_xy[1]:+.3f}] "
++                  f"(nominal {SEQ_SPAWN_XY}, jitter +-{args.spawn_jitter:.3f} m, "
++                  f"seed={args.seed})")
+ 
+         def _obj_qadr(i):
+             return int(model.jnt_qposadr[model.body_jntadr[objects[i]['id_body']]])
