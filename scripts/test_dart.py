@@ -26,10 +26,18 @@ from handil.eval import WindowedPolicy
 from handil.train import TrainConfig, load_policy, train
 
 
-def drift_and_reach(policy, scene, obj, kp_hand, ref_obs, steps=300):
-    """Closed-loop drift from a reference demo, and closest hand-object approach."""
+def drift_and_reach(policy, scene, obj, kp_hand, ref_obs, steps=300,
+                    action_space="position"):
+    """Closed-loop drift from a reference demo, and closest hand-object approach.
+
+    `action_space` MUST match the dataset the policy was trained on: a delta
+    policy's small outputs interpreted as absolute joint targets drive the arm
+    to ~zero and silently produce an identical, meaningless result for every
+    cell (this bug made all six delta cells report reach = 0.495 m).
+    """
     from handil.data.schema import obs_slice
-    env = PickPlaceEnv(scene=scene, kp_hand=kp_hand, active_object=obj)
+    env = PickPlaceEnv(scene=scene, kp_hand=kp_hand, active_object=obj,
+                       action_space=action_space)
     wp = WindowedPolicy(policy, getattr(policy, "horizon", 1))
     wp.reset()
     obs = env.reset()
@@ -66,6 +74,10 @@ def main() -> int:
     scene = build_scene("robocasa")
     kp_hand = 0.8 if args.pipeline == "contact_aware" else 2.0
     dim = manifest_obs_dim(args.data)
+    # The rollout must be driven in the same space the labels were built in.
+    action_space = json.loads(
+        (args.data / "manifest.json").read_text()).get("action_space", "position")
+    print(f"action_space = {action_space}")
 
     eps = json.loads((args.data / "manifest.json").read_text())["episodes"]
     ref = [e for e in eps if e["pipeline"] == args.pipeline
@@ -91,13 +103,15 @@ def main() -> int:
             n_succ = n_pick = 0
             for i in range(args.episodes):
                 env = PickPlaceEnv(scene=scene, kp_hand=kp_hand,
-                                   active_object=objs[i % len(objs)])
+                                   active_object=objs[i % len(objs)],
+                                   action_space=action_space)
                 wp = WindowedPolicy(policy, getattr(policy, "horizon", 1))
                 wp.reset()
                 r = rollout(env, wp, max_steps=args.max_steps)
                 n_succ += r.success
                 n_pick += r.picked
-            dev, reach = drift_and_reach(policy, scene, objs[0], kp_hand, ref_obs)
+            dev, reach = drift_and_reach(policy, scene, objs[0], kp_hand,
+                                         ref_obs, action_space=action_space)
             row = dict(algo=algo, copies=copies, sigma=sigma,
                        val=s["best_val"], n_samples=s["n_samples"],
                        success=n_succ / args.episodes, pick=n_pick / args.episodes,

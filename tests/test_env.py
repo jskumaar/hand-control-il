@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from handil.data.schema import N_ROBOT, OBS_DIM
+from handil.data.schema import N_ARM, N_ROBOT, OBS_DIM
 
 pytest.importorskip("mujoco")
 
@@ -222,3 +222,40 @@ def test_reset_without_jitter_is_deterministic(env):
     b = env.reset(arm_jitter=0.0).copy()
     np.testing.assert_allclose(a, b, atol=1e-3)
     np.testing.assert_allclose(env.data.qpos[:7], home_qpos()[:7], atol=1e-3)
+
+
+def test_delta_action_space_is_relative_to_current_position(env):
+    """A delta policy's output must be added to qpos, not used as a target.
+
+    Driving a delta policy through a position-space env silently sends the arm
+    toward zero and produces an identical meaningless result for every cell --
+    it invalidated a whole sweep before this test existed.
+    """
+    import numpy as np
+    from handil.envs.rollout import PickPlaceEnv
+    from handil.envs.scene import home_qpos
+
+    e = PickPlaceEnv(scene=env.scene, kp_hand=0.8, active_object=0,
+                     action_space="delta")
+    e.reset()
+    q0 = e.data.qpos[:N_ROBOT].copy()
+    zero = np.zeros(N_ROBOT)
+    e.step(zero)
+    # A zero delta means "hold", so the target must be the pose we were in.
+    np.testing.assert_allclose(e._target, q0, atol=1e-9)
+
+    e.reset()
+    q0 = e.data.qpos[:N_ROBOT].copy()
+    d = np.full(N_ROBOT, 0.01)
+    e.step(d)
+    np.testing.assert_allclose(e._target[:N_ARM], (q0 + d)[:N_ARM], atol=1e-9)
+
+
+def test_position_space_treats_the_action_as_absolute(env):
+    """The contrast case: the same vector means something different."""
+    import numpy as np
+    env.reset()
+    tgt = np.zeros(N_ROBOT)
+    env.step(tgt)
+    # Absolute: a zero vector is a real (clipped) target near zero, not "hold".
+    assert np.abs(env._target).max() < 1.0
