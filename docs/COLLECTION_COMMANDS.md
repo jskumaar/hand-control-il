@@ -1,85 +1,111 @@
-# Collection commands for both conditions
+# Data collection: exactly what to run
 
-Two conditions, retargeter held fixed so **pipeline is the only variable**.
-`anyteleop` is the right retargeter: it is the only one with usable counts in
-both arms today (16 baseline / 23 contact-aware).
+Two conditions, retargeter held **fixed** (`anyteleop`) so pipeline is the only
+variable. Verified: `start_teleop.sh` forwards `"$@"` to the python entry point,
+and both new flags parse in the real script.
 
-## Prerequisites
-
-`--spawn-jitter` is **implemented** in the working tree of `hand-control`
-(`kinova_leap_pick_place.py`, two hunks). It is left uncommitted because that
-file already carried ~560 lines of your unrelated in-progress work when this was
-written, and those are not mine to commit. Review and commit alongside your own,
-or apply `docs/spawn_jitter.patch` to a clean tree.
-
-It applies the offset **once per run**, drawn from `--seed`: within a run every
-trial still presents its object at the same place (the four objects already
-differ, so within-run variation is not what the dataset lacks), while different
-runs differ. Verified: 12 seeds give a 0.030 m std per axis — comparable to the
-0.038–0.075 m drift already present between runs, but deliberate and
-reproducible — and the clamp keeps every point inside the envelope 93 real
-successful demos actually occupy (x ∈ [−0.36, −0.12], y ∈ [0.34, 0.56],
-0.59–0.68 m from `base_link`).
-
-> The layout comment in `scene_objects.json` says objects should sit 0.30–0.42 m
-> from the base. That is **stale** for the robocasa counter + sequential spawner:
-> real successful demos sit at 0.61–0.76 m. The clamp follows the measurement,
-> not the comment.
-
-Still outstanding: the three GRASP log fields from `BEFORE_COLLECTING.md` §1,
-which are what make the contact-aware finger labels recoverable.
-
-## Condition A — baseline (raw teleop)
+## 0. One-time setup
 
 ```bash
+cd ~/sureshkj/hand-control
+
+# the anyteleop retargeter needs the extra (plain `uv sync` prunes it)
+uv sync --extra anyteleop
+
+# the two patches from this work are in the working tree already; if you are on a
+# clean checkout instead:
+#   git apply ../hand-control-il/docs/hand_control_logging.patch
+```
+
+Then start the headset publisher in its own terminal:
+
+```bash
+./start_teleop.sh hands
+```
+
+## 1. The collection loop
+
+**Interleave the conditions** — alternate A, B, A, B. Operator skill drifts over
+a session and the existing data cannot separate that from a pipeline effect.
+Bump `--seed` and `--order` together each pair.
+
+```bash
+cd ~/sureshkj/hand-control
+
+# --- run pair 1 ---
 ./start_teleop.sh sim anyteleop \
-    --trial-log baselineA_$(date +%Y%m%d) \
-    --sequential-spawn --order 1 \
-    --spawn-jitter 0.05 \
-    --seed 1 \
-    --record on
-```
+    --trial-log baseline_r01 --sequential-spawn --order 1 \
+    --spawn-jitter 0.05 --seed 1 --record on
 
-## Condition B — contact-aware
-
-```bash
 ./start_teleop.sh sim contact_aware_w_anyteleop \
-    --trial-log contactB_$(date +%Y%m%d) \
-    --sequential-spawn --order 1 \
-    --spawn-jitter 0.05 \
-    --seed 1 \
-    --record on
+    --trial-log contact_r01 --sequential-spawn --order 1 \
+    --spawn-jitter 0.05 --seed 1 --record on
+
+# --- run pair 2:  --order 2  --seed 2,  logs baseline_r02 / contact_r02
+# --- run pair 3:  --order 3  --seed 3
+# --- run pair 4:  --order 4  --seed 4
+# --- then cycle --order 1..4 again with --seed 5,6,7,...
 ```
 
-## How many, and how to interleave
+Each run presents all four objects once (~4 episodes), so **11–13 pairs** gets
+both conditions from today's 16 / 23 to the 40–50 target.
 
-Target **40–50 successful episodes per condition** (today: 16 / 23).
+`--seed` drives the per-run spawn offset, so the same seed reproduces the same
+layout. The console prints it, e.g.
 
-Each run with `--sequential-spawn --order N` presents all four objects once, so
-one run ≈ 4 episodes. That is ~11–13 runs per condition.
+```
+[spawn-jitter] this run presents objects at [-0.199, +0.495] (nominal [-0.2, 0.45], jitter ±0.050 m, seed=1)
+```
 
-**Interleave the conditions** — alternate A, B, A, B rather than recording all
-of A then all of B. Operator skill drifts over a session, and the current data
-cannot distinguish that from a pipeline effect. Vary `--order 1..4` across runs
-so object presentation order is counterbalanced, and use a fresh `--seed` per
-run so the jitter differs.
+Keep **counts equal per object**: the mug has 43 collision hulls and a handle, so
+an imbalance there reads as a pipeline difference.
 
-Keep counts equal per object: the mug behaves differently from the other three
-(43 collision hulls and a handle), so an imbalance there shows up as a
-pipeline difference.
+### What each flag is for
 
-## Then analyse
+| flag | why |
+|---|---|
+| `--sequential-spawn` | one object at a time from a single point, so initial conditions are comparable |
+| `--order 1..4` | cyclic-Latin presentation order, counterbalanced across runs |
+| `--spawn-jitter 0.05` | **new** — per-run object position variation (within-run was 0.0000 m) |
+| `--seed N` | reproducible jitter; vary across runs |
+| `--record on` | overview + wrist MP4, for diagnosing a bad episode later |
+| `--trial-log NAME` | required by `--sequential-spawn`; names the log directory |
+
+## 2. Analyse
 
 ```bash
-# extract (handil needs no change; schema is versioned)
-cd ../hand-control-il
+cd ~/sureshkj/hand-control-il
+
 uv run python scripts/extract_data.py \
     --logs ../hand-control/logs --out data/v3 --outcomes success
 
-# the comparison, with every methodological fix applied
 uv run python scripts/run_experiment.py --data data/v3 --seeds 12 --rollouts 4
 ```
 
-`run_experiment.py` uses K-fold CV over episodes (not a single split), matched
-episode counts, a fixed retargeter, and ≥2500-step rollouts — the four things
-that each produced a wrong answer earlier in this project.
+`extract_data.py` needs no change: the schema is versioned, and it automatically
+uses the new `q_grasp_hold` / `kp_eff` fields when present (`action_source`
+reports `logged_grasp_hold` instead of `inverted_torque`).
+
+`run_experiment.py` applies all four methodological fixes this project needed —
+K-fold CV over episodes, episode-level splits, matched episode counts, and
+≥2500-step rollouts.
+
+## 3. Sanity checks after the first pair
+
+Before committing to 11 more pairs, confirm the new fields landed:
+
+```bash
+cd ~/sureshkj/hand-control-il
+uv run python -c "
+import numpy as np, glob
+p = sorted(glob.glob('../hand-control/logs/contact_r01/pose_trace.npz'))[0]
+d = np.load(p, allow_pickle=True)
+print('has q_grasp_hold:', 'q_grasp_hold' in d.files)
+print('has kp_eff      :', 'kp_eff' in d.files)
+print('GRASP rows with a finite hold:',
+      int(np.isfinite(d['q_grasp_hold']).all(1).sum()), '/', len(d['t']))
+"
+```
+
+A nonzero count means the contact-aware finger labels are now exact and the
+`qpos[t+1]` repair (46% of rows today) no longer applies.
