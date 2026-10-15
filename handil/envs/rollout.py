@@ -71,8 +71,9 @@ class PickPlaceEnv:
         self.kp = np.concatenate([self.scene.kp_arm,
                                   np.full(N_ROBOT - N_ARM, float(kp_hand))])
         self.velocity_injection = velocity_injection
-        if action_space not in ("position", "torque"):
-            raise ValueError(f"action_space must be position|torque, got {action_space!r}")
+        if action_space not in ("position", "torque", "delta"):
+            raise ValueError("action_space must be position|torque|delta, "
+                             f"got {action_space!r}")
         self.action_space = action_space
         self._tau_cmd = np.zeros(N_ROBOT)
         # Internal-force squeeze. A P law can close the fingers but cannot press,
@@ -426,13 +427,19 @@ class PickPlaceEnv:
         P law converts it to torque. In "torque" mode the action IS the commanded
         joint torque (N*m) and is applied directly -- the only faithful way to
         execute a contact-aware grasp, whose squeeze is an internal-force torque
-        with no position-target equivalent.
+        with no position-target equivalent. In "delta" mode the action is a
+        residual added to the current joint position, which removes the identity
+        shortcut that absolute targets allow (see schema.ACTION_SPACES).
         """
         a = np.asarray(action, float).reshape(N_ROBOT).copy()
         if self.action_space == "torque":
             self._tau_cmd = a
             self._target = None
         else:
+            if self.action_space == "delta":
+                # The policy emits a residual; the absolute target is recovered
+                # here so the controller and the joint-limit clip are unchanged.
+                a = self.data.qpos[:N_ROBOT] + a
             self._target = a
             # Clip only joints with a real stop: joints 0/2/4/6 are continuous
             # and the demonstrations drive them well past pi.

@@ -113,3 +113,28 @@ def test_torques_from_log_ignores_object_dofs():
     qfrc = np.ones((n, 47))
     bias = np.zeros((n, 47))
     assert act.torques_from_log(qfrc, bias).shape == (n, N_ROBOT)
+
+
+def test_deltas_round_trip_against_targets():
+    """delta = target - qpos, and the env recovers target = qpos + delta."""
+    rng = np.random.default_rng(7)
+    n = 40
+    qpos = rng.normal(size=(n, N_ROBOT))
+    targets = qpos + rng.normal(scale=0.05, size=(n, N_ROBOT))
+    d = act.deltas_from_targets(targets, qpos)
+    np.testing.assert_allclose(qpos + d, targets, atol=1e-12)
+
+
+def test_deltas_break_the_identity_shortcut():
+    """With absolute targets, corr(action, qpos) ~ 0.91 on real data, so
+    'echo your current position' is a near-optimal regression solution. The
+    delta parameterisation must destroy that correlation."""
+    rng = np.random.default_rng(8)
+    n = 4000
+    qpos = np.cumsum(rng.normal(scale=0.02, size=(n, N_ROBOT)), axis=0)
+    targets = qpos + rng.normal(scale=0.02, size=(n, N_ROBOT))
+    d = act.deltas_from_targets(targets, qpos)
+    c_abs = abs(np.corrcoef(targets[:, 0], qpos[:, 0])[0, 1])
+    c_del = abs(np.corrcoef(d[:, 0], qpos[:, 0])[0, 1])
+    assert c_abs > 0.9, c_abs
+    assert c_del < 0.2, c_del

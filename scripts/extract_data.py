@@ -34,12 +34,14 @@ def main() -> int:
                     help="which trial outcomes to keep (default: success only)")
     ap.add_argument("--include-obsolete", action="store_true")
     ap.add_argument("--action-space", default="position",
-                    choices=["position", "torque"],
+                    choices=["position", "torque", "delta"],
                     help="position: joint targets in rad, inverted from the logged "
                          "torque (default). torque: the logged joint torque in N*m, "
                          "which needs no inversion and is the only faithful label "
                          "for the contact-aware GRASP phase (its PD gains are not "
-                         "logged, so its position target is unrecoverable).")
+                         "logged, so its position target is unrecoverable). "
+                         "delta: target minus current position, which removes "
+                         "the identity shortcut absolute targets allow.")
     ap.add_argument("--phase-onehot", action="store_true",
                     help="append a 4-d phase one-hot to the observation. OFF by "
                          "default: the real phase machine is stateful (dwell "
