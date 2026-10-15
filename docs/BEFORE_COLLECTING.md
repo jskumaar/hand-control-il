@@ -45,7 +45,51 @@ can be deleted. This is the single change that most improves the data.
 
 ---
 
-## 2. Vary the initial pose (`hand-control`) — do it, but not for the reason I first gave
+## 2a. Vary the OBJECT position — yes, and it needs a code change
+
+**Measured, not assumed.** Object start positions in the current data have a
+5–7 cm std per axis, which looks like useful variation until you split it:
+
+| | x std | y std |
+|---|---|---|
+| **within** a run (repeated trials, same config) | **0.0000 m** | **0.0000 m** |
+| between runs (session to session) | 0.057–0.075 m | 0.038–0.058 m |
+
+So the spread is entirely **configuration drift across recording sessions**, not
+deliberate variation. Within any single run every trial starts in exactly the
+same place. That is the worst of both worlds: not controlled enough to be a clean
+fixed-position dataset, and not varied enough to teach *where* to reach — a
+policy can memorise one trajectory per object instead of learning the mapping
+`obj_in_palm → reach direction`, which is the part that generalises.
+
+**The code change.** `SEQ_SPAWN_XY` is hard-coded at
+`kinova_leap_pick_place.py:1415`, and `args.no_randomize = True` is forced at
+:459, so there is currently **no way to vary it from the CLI**. Add a flag:
+
+```python
+# argparse
+_arg_parser.add_argument('--spawn-jitter', type=float, default=0.0,
+                         help='metres of uniform XY jitter on the sequential '
+                              'spawn point, resampled per trial')
+
+# where the object is seated (near :1469, _spawn_object_at)
+if args.spawn_jitter > 0:
+    xy = [xy[0] + _rng.uniform(-args.spawn_jitter, args.spawn_jitter),
+          xy[1] + _rng.uniform(-args.spawn_jitter, args.spawn_jitter)]
+```
+
+Use `--spawn-jitter 0.05` (±5 cm), which matches the between-run spread already
+present and keeps every object inside the reachable envelope the layout comment
+documents (x ∈ [−0.55, 0.55], y ∈ [−0.075, 0.575], 0.30–0.42 m from the base).
+Drive it from `--seed` so a session is reproducible.
+
+Also worth varying the object **yaw** (`quat` in `scene_objects.json` is already
+per-entry), since grasp geometry depends on orientation — especially for the mug,
+whose handle makes a canonical grasp ill-defined.
+
+---
+
+## 2b. Vary the initial ARM pose (`hand-control`) — do it, but not for the reason I first gave
 
 Every existing episode starts from a **bit-identical** home pose (zero spread
 across all 7 arm joints). That is unusual for an IL dataset and worth fixing on
