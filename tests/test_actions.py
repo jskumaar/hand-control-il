@@ -138,3 +138,45 @@ def test_deltas_break_the_identity_shortcut():
     c_del = abs(np.corrcoef(d[:, 0], qpos[:, 0])[0, 1])
     assert c_abs > 0.9, c_abs
     assert c_del < 0.2, c_del
+
+
+def test_logged_grasp_hold_is_used_verbatim_where_present():
+    """When hand-control logs q_grasp_hold, those rows need no inversion: the
+    commanded target IS the hold. Guards the new consumer path."""
+    rng = np.random.default_rng(11)
+    n = 60
+    qpos = rng.normal(size=(n, N_ROBOT))
+    kp_arm = act.KP_ARM_FALLBACK
+    kp_hand = 0.8
+    kp = np.concatenate([kp_arm, np.full(N_ROBOT - N_ARM, kp_hand)])
+    target = qpos + rng.normal(scale=0.05, size=(n, N_ROBOT))
+    bias = rng.normal(size=(n, N_ROBOT))
+    qfrc = kp * (target - qpos) + bias
+
+    # GRASP on the second half; hold is NaN elsewhere, as the logger writes it.
+    hold = np.full((n, N_ROBOT), np.nan)
+    grasp_target = rng.normal(size=(n // 2, N_ROBOT))
+    hold[n // 2:] = grasp_target
+    phase = np.array(["REACH"] * (n // 2) + ["GRASP"] * (n // 2))
+
+    out, frac = act.targets_from_logged_grasp(
+        qpos, qfrc, bias, kp_arm, kp_hand, hold, None, phase)
+    assert frac == pytest.approx(0.5)
+    # GRASP rows come straight from the log
+    np.testing.assert_allclose(out[n // 2:], grasp_target, atol=1e-12)
+    # non-GRASP rows still come from the exact torque inversion
+    np.testing.assert_allclose(out[: n // 2], target[: n // 2], atol=1e-9)
+
+
+def test_logged_grasp_falls_back_when_the_field_is_absent():
+    rng = np.random.default_rng(12)
+    n = 10
+    qpos = rng.normal(size=(n, N_ROBOT))
+    bias = np.zeros((n, N_ROBOT))
+    kp = np.concatenate([act.KP_ARM_FALLBACK, np.full(16, 0.8)])
+    target = qpos + 0.01
+    qfrc = kp * (target - qpos) + bias
+    out, frac = act.targets_from_logged_grasp(
+        qpos, qfrc, bias, act.KP_ARM_FALLBACK, 0.8, None, None, None)
+    assert frac == 0.0
+    np.testing.assert_allclose(out, target, atol=1e-9)

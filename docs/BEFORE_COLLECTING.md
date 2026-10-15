@@ -43,6 +43,20 @@ policy trained on that can track a closing hand but never command one.
 With those, the GRASP finger target becomes exactly recoverable and the repair
 can be deleted. This is the single change that most improves the data.
 
+**Status: implemented** in the `hand-control` working tree, alongside
+`--spawn-jitter`. Both are in `docs/hand_control_logging.patch` (4 hunks) —
+uncommitted there because that file already carried ~560 lines of unrelated
+in-progress work. One correction found while writing it: there is no
+`grasp_ctrl.gamma`; gamma lives on `grasp_ctrl.allocator.gamma` and may be a
+per-contact vector, so the patch logs `np.max(np.atleast_1d(...))`, which is what
+`solve_gamma_cone` itself reports.
+
+The `handil` consumer is already in place: `actions.targets_from_logged_grasp()`
+uses the logged hold verbatim on GRASP rows and falls back to the old repair when
+the fields are absent, so **old and new logs both extract correctly** and
+`action_source` records which path ran (`logged_grasp_hold` vs
+`inverted_torque`).
+
 ---
 
 ## 2a. Vary the OBJECT position — yes, and it needs a code change

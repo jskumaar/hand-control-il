@@ -1,0 +1,98 @@
+diff --git a/kinova_leap_pick_place.py b/kinova_leap_pick_place.py
+index 53b5132..d5947fe 100644
+--- a/kinova_leap_pick_place.py
++++ b/kinova_leap_pick_place.py
+@@ -238,6 +238,17 @@ if __name__ == "__main__":
+         help="RNG seed for object randomization — the same seed reproduces the same "
+              "layout (positions and sizes). Default: fresh entropy every run. "
+              "Ignored with --no-randomize.")
++    _arg_parser.add_argument(
++        '--spawn-jitter', type=float, default=0.0, metavar='M',
++        help="Metres of uniform XY jitter applied ONCE PER RUN to the "
++             "--sequential-spawn point, drawn from --seed. Every trial in the run "
++             "still presents its object at the same place (the four objects differ, "
++             "so within-run variation is not needed), but different runs place them "
++             "differently. Measured motivation: object start positions currently vary "
++             "0.038-0.075 m BETWEEN runs purely as config drift and 0.0000 m within a "
++             "run, so the dataset is neither a clean fixed-position set nor varied "
++             "enough to teach where to reach. 0.05 keeps every object inside the "
++             "reachable envelope (x in [-0.55, 0.55], y in [-0.075, 0.575]).")
+     _arg_parser.add_argument(
+         '--hand-self-collision', action='store_true',
+         help="Re-enable LEAP hand self-collision (finger↔finger, finger↔palm contact "
+@@ -1372,6 +1426,26 @@ if __name__ == "__main__":
+     SEQ_SPAWN_XY = [-0.20, 0.45]
+     if _SEQ_SPAWN:
+         _seq_spawn_xy = list(SEQ_SPAWN_XY)
++        # Per-RUN spawn offset (--spawn-jitter). Drawn once here, not per trial:
++        # within a run the four objects already differ, so what the dataset lacks
++        # is variation BETWEEN runs. Seeded from --seed so a run is reproducible,
++        # and clamped to the counter's reachable envelope.
++        if args.spawn_jitter > 0.0:
++            _sj_rng = np.random.default_rng(args.seed)
++            _sj = _sj_rng.uniform(-args.spawn_jitter, args.spawn_jitter, 2)
++            # Clamp to the envelope real successful demos actually occupy:
++            # measured over 93 of them, x in [-0.351, -0.200], y in [0.350,
++            # 0.550], i.e. 0.61-0.76 m from base_link. (The layout comment's
++            # "0.30-0.42 m from the base" predates the robocasa counter and the
++            # sequential spawner -- it is stale for this configuration.)
++            _seq_spawn_xy = [
++                float(np.clip(SEQ_SPAWN_XY[0] + _sj[0], -0.36, -0.12)),
++                float(np.clip(SEQ_SPAWN_XY[1] + _sj[1], 0.34, 0.56)),
++            ]
++            print(f"[spawn-jitter] this run presents objects at "
++                  f"[{_seq_spawn_xy[0]:+.3f}, {_seq_spawn_xy[1]:+.3f}] "
++                  f"(nominal {SEQ_SPAWN_XY}, jitter +-{args.spawn_jitter:.3f} m, "
++                  f"seed={args.seed})")
+ 
+         def _obj_qadr(i):
+             return int(model.jnt_qposadr[model.body_jntadr[objects[i]['id_body']]])
+@@ -5695,8 +6069,46 @@ if __name__ == "__main__":
+                     hand_head=_hand_head,        # headset pose pos+quat (raw[3:10])
+                     hand_lm=_hand_lm,            # 21 wrist-relative landmarks (raw[57:120])
+                     hand_age_s=float(_hand_age), # secs since last hand msg (>~0.05 = dropout)
+-                    norm_force=np.array([_pt_norm[f] for f in FINGER_SET]),
+-                    tan_force=np.array([_pt_tan[f] for f in FINGER_SET]),
++                    # FIXED-WIDTH 4, in a CANONICAL order -- not FINGER_SET, whose length
++                    # now varies per object. TraceBuffer.save does
++                    # np.asarray([r[k] for r in rows]), so a run whose orange logs 2
++                    # columns and whose wood block logs 4 produces a RAGGED array and the
++                    # .npz write fails (or silently lands as dtype=object). A finger that
++                    # is not grasping reports 0.0; n_contacts below says how many were
++                    # live, so a 0.0 is never ambiguous between "not grasping" and
++                    # "grasping at zero force".
++                    norm_force=np.array([_pt_norm[f] for f in _TRACE_FINGERS]),
++                    tan_force=np.array([_pt_tan[f] for f in _TRACE_FINGERS]),
++                    n_contacts=int(len(FINGER_SET)),
++                    # GRASP-PHASE PD TARGET AND GAINS. Without these the
++                    # contact-aware finger command is NOT RECOVERABLE from the
++                    # log, because the GRASP torque is
++                    #     kp_eff*(q_grasp_hold - qpos) + kd_eff*(...)
++                    #       + internal_force + slip_correction
++                    # and kp_eff is a live product of squeeze_pd_scale,
++                    # transport_pd_scale and gamma/gamma_ref -- none of which
++                    # appear anywhere in the trace. An IL consumer inverting the
++                    # torque as if it were pure PD gets finger targets up to
++                    # 20 rad, so it has to substitute qpos[t+1] ("follow where
++                    # the finger already went") on ~46% of contact-aware rows,
++                    # which can track a closing hand but never COMMAND one: the
++                    # resulting squeeze margin is 0.002 rad median.
++                    # With these three the finger target inverts exactly.
++                    # NaN/zero outside GRASP, where there is no such target.
++                    q_grasp_hold=(np.asarray(q_grasp_hold, float).copy()
++                                  if q_grasp_hold is not None
++                                  else np.full(N_ROBOT, np.nan)),
++                    kp_eff=(np.asarray(grasp_ctrl.effective_gains()[0],
++                                       float).copy()
++                            if grasp_ctrl is not None
++                            else np.full(N_ROBOT, np.nan)),
++                    # gamma lives on the allocator (GraspForceAllocator), not on
++                    # the controller -- there is no grasp_ctrl.gamma. It may be a
++                    # per-contact vector, so reduce to the commanded peak, which
++                    # is what solve_gamma_cone itself reports.
++                    gamma_live=(float(np.max(np.atleast_1d(
++                                    grasp_ctrl.allocator.gamma)))
++                                if grasp_ctrl is not None else float('nan')),
+                     f_net=np.asarray(_pt_fnet).copy(),      # net contact force on object (world, N)
+                     tau_net=np.asarray(_pt_taunet).copy(),  # net contact torque on object
+                     t=float(data.time),          # sim-time; RESETS to 0 on backspace reset
