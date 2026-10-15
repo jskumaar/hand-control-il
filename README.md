@@ -57,36 +57,46 @@ solref-ablation spread. (This needs the full `logs/` tree with
 `--include-ablations` — `ICRA_experiments` alone has just 3
 `contact_aware+anyteleop` episodes.)
 
-### Result: supported on learnability
+### Result: NOT supported on this data
 
-60 episodes per cell, 3 seeds, pipeline as the only variable:
+> **Retraction.** Earlier versions of this file reported "contact-aware is 2-3x
+> more learnable, no seed overlap". That was wrong, from two bugs of mine: a
+> validation split over SAMPLES rather than episodes (which let windows ~10
+> timesteps apart sit on both sides, so the metric measured interpolation within
+> a trajectory), and only 3 seeds against an effect that needs 24.
 
-| | seed 0 | seed 1 | seed 2 | **mean** | train samples |
-|---|---|---|---|---|---|
-| BC-MLP `baseline` | 0.00724 | 0.00802 | 0.00776 | 0.00768 | 94,048 |
-| BC-MLP `contact_aware` | 0.00360 | 0.00203 | 0.00190 | **0.00251** | 50,915 |
-| BC-RNN `baseline` | 0.00166 | 0.00161 | 0.00166 | 0.00164 | 93,448 |
-| BC-RNN `contact_aware` | 0.00082 | 0.00150 | 0.00119 | **0.00117** | 50,315 |
+Properly measured -- per-episode held-out split, BC-MLP, **24 seeds per arm**:
 
-Contact-aware wins on both architectures — **3.1x** on BC-MLP with no overlap
-between the seed distributions, **1.4x** on BC-RNN — and does it on *half* the
-training samples, since its episodes are 44% shorter (867 vs 1556 steps).
+| | mean | sd | range |
+|---|---|---|---|
+| `baseline+anyteleop` | **0.0991** | 0.0465 | 0.030 – 0.178 |
+| `contact_aware+anyteleop` | 0.1080 | 0.0790 | 0.009 – 0.298 |
 
-### The mechanism, measured directly
+effect **−0.0089** (baseline marginally better), Cohen d **−0.14**, Welch
+t = −0.48, **p = 0.63**. A null result, with the sign *against* the hypothesis.
 
-Cross-episode spread of the hand posture at peak grasp, and of where the object
-sits in the palm. Lower = the pipeline puts the hand in the same configuration
-every time, which is what should make the data easier to imitate:
+At 3 seeds the same comparison showed contact-aware ahead by d = 0.81. Bootstrapping
+3-seed draws from these 24: **44% of draws make contact-aware look better by
+chance**, and the +0.037 effect I originally reported sits at the 82nd percentile
+of that distribution. There was no signal — only noise plus a leaky split.
 
-| Object | hand posture | object-in-palm |
-|---|---|---|
-| gelatin box | 0.407 → **0.112** (−72%) | −55% |
-| wood block | 0.320 → **0.252** (−21%) | −46% |
-| orange | 0.341 → **0.268** (−21%) | −46% |
-| mug | 0.279 → 0.333 (+19%) | +7% |
+BC-RNN under the per-episode split is likewise a tie (0.1434 vs 0.1408, d = 0.04).
 
-Three of four objects get markedly more consistent. The **mug is the exception**
-— 43 collision hulls and a handle make a canonical grasp hardest to define.
+#### What does survive
+
+The *mechanism* is real and independent of the learning result, because it is a
+direct property of the demonstrations rather than of any model: cross-episode
+spread of hand posture at peak grasp falls 21–72% on three of four objects, and
+object-in-palm spread falls 46–55%. Contact-aware collection genuinely produces
+more repeatable grasps. It just does not make the data measurably easier to
+regress at this sample size, and does not improve closed-loop behaviour.
+
+#### What would be needed to test the hypothesis properly
+
+With sd ≈ 0.047–0.079 between seeds and no detectable effect at n = 24, the
+limit is now the **data**, not the seed count: 16 vs 23 episodes per cell is too
+few for a difference this small to be resolvable. More
+`baseline+anyteleop` / `contact_aware+anyteleop` episodes is the only route.
 
 ### Two caveats, stated plainly
 
