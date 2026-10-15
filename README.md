@@ -242,6 +242,51 @@ phase (it is the only faithful one — see above) but the wrong **command** for 
 BC policy to emit. Those are separable choices, and a sensible next design is a
 position policy with a learned squeeze magnitude, rather than full torque control.
 
+### Three interventions, all 0% success — and what they ruled out
+
+| intervention | drift@50 | drift@200 | success |
+|---|---:|---:|---:|
+| position BC (baseline) | 3.12 | 2.35 | 0% |
+| position + DART (4×0.10) | 1.59 | 1.13 | 0% |
+| **delta** BC | 1.20 | 4.44 | 0% |
+| **delta + DART** (4×0.05) | **0.35** | **0.81** | 0% |
+
+**DART noise injection** halves drift and then saturates (8 copies is worse than
+4). **Delta actions** plus DART reduce drift@50 by **9×** versus position BC, and
+the two compound. Neither produces task success.
+
+**Start-pose jitter** (0 → 0.20 rad): 0% at every level for both plain BC and
+DART, and nothing *degrades* with jitter, because there was no competence at
+jitter=0 to lose. A DART policy's reach is flat across jitter where plain BC's
+scatters, so its robustness did transfer — robustly to the wrong place.
+
+#### The mechanism this found
+
+With **absolute** joint targets, `corr(action, qpos) = 0.91` and
+`|action − qpos|` is 0.016 rad median, so *"echo your current joint position"* is
+a near-optimal regression solution. A BC-RNN trained that way predicts the
+demonstrated action to **0.0018 rad teacher-forced** while commanding only
+**13–39%** of the joint travel the task needs. It was never drifting off a good
+trajectory — it had no trajectory. That is why neither recovery data nor start
+variation could help.
+
+Delta actions remove the shortcut: `corr(action, qpos)` falls **0.9125 → 0.0030**
+and commanded travel rises to **0.65–2.62×** the demonstration. The
+under-commitment is fixed; success is not.
+
+#### Two measurement caveats, both ours
+
+1. **A harness bug invalidated the first delta sweep.** `test_dart.py` built the
+   env without `action_space`, so ~0.007 rad residuals executed as absolute
+   targets. The tell was `reach` identical to 0.495 m across four different
+   policies. Fixed, re-run, and pinned by a regression test.
+2. **`min |obj_in_palm|` is not a hand-object clearance.** The palm *body*
+   origin sits well behind the fingertips, so it carries a fixed offset:
+   successful demonstrations themselves bottom out at a 0.126–0.161 m median.
+   Measured by fingertip instead, plain position BC reaches **0.076 m** — closer
+   than a demo replay's 0.185 m — so reach was never that policy's binding
+   constraint. Do not read the `reach` column as a distance-to-grasp.
+
 ### What remains untested
 
 Task-level success for the contact-aware pipeline. Both candidate fixes are now
