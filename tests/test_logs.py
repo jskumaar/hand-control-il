@@ -103,3 +103,58 @@ def test_phase_per_row_ignores_unknown_phase_names():
     ev = [{"event": "phase_enter", "trial_id": 1, "t_wall": 1.0, "phase": "BOGUS"}]
     got = phase_per_row(ev, 1, np.arange(3.0))
     assert set(got) == {"APPROACH"}
+
+
+def test_episode_split_holds_out_whole_episodes():
+    """A per-sample split leaks near-duplicate frames into validation: windows
+    10 steps apart in one episode are nearly identical, so val loss measures
+    interpolation within a trajectory, not generalisation to a new one."""
+    import numpy as np
+    from handil.data.dataset import episode_split
+
+    class FakeDS:
+        # 5 episodes x 20 samples
+        episode_of = np.repeat(np.arange(5), 20)
+
+        def __len__(self):
+            return 100
+
+    ds = FakeDS()
+    i_tr, i_va = episode_split(ds, val_frac=0.2, seed=0)
+    assert len(i_tr) + len(i_va) == 100
+    tr_eps = set(ds.episode_of[i_tr].tolist())
+    va_eps = set(ds.episode_of[i_va].tolist())
+    assert not (tr_eps & va_eps), "an episode appears on both sides"
+    assert len(va_eps) == 1          # 20% of 5 episodes
+    assert len(i_va) == 20           # all of that episode's samples
+
+
+def test_episode_split_falls_back_without_episode_info():
+    import numpy as np
+    from handil.data.dataset import episode_split
+
+    class NoEps:
+        def __len__(self):
+            return 50
+
+    i_tr, i_va = episode_split(NoEps(), val_frac=0.2, seed=0)
+    assert len(i_tr) + len(i_va) == 50
+    assert len(i_va) == 10
+    assert not (set(i_tr) & set(i_va))
+
+
+def test_episode_split_is_deterministic_per_seed():
+    import numpy as np
+    from handil.data.dataset import episode_split
+
+    class FakeDS:
+        episode_of = np.repeat(np.arange(10), 5)
+
+        def __len__(self):
+            return 50
+
+    a = episode_split(FakeDS(), 0.2, seed=3)
+    b = episode_split(FakeDS(), 0.2, seed=3)
+    c = episode_split(FakeDS(), 0.2, seed=4)
+    assert a == b
+    assert a != c

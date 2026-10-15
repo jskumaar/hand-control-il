@@ -8,12 +8,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 
 from .algos import build
 from .data.dataset import (EpisodeStore, Normalizer, SequenceDataset,
-                           TransitionDataset, load_manifest, manifest_obs_dim,
-                           select)
+                           TransitionDataset, episode_split, load_manifest,
+                           manifest_obs_dim, select)
 from .data.schema import ACT_DIM, OBS_DIM
 
 
@@ -119,9 +119,10 @@ def train(cfg: TrainConfig) -> dict:
 
     print(f"  device: {cfg.device_note()}")
     ds, norm, eps, policy, dim = make_datasets(cfg)
-    n_val = max(1, int(len(ds) * cfg.val_frac))
-    tr, va = random_split(ds, [len(ds) - n_val, n_val],
-                          generator=torch.Generator().manual_seed(cfg.seed))
+    # Split by EPISODE: a per-sample split leaks near-duplicate frames into
+    # validation (see dataset.episode_split).
+    i_tr, i_va = episode_split(ds, cfg.val_frac, cfg.seed)
+    tr, va = Subset(ds, i_tr), Subset(ds, i_va)
     dl_tr = DataLoader(tr, batch_size=cfg.batch_size, shuffle=True,
                        num_workers=cfg.num_workers, drop_last=True)
     dl_va = DataLoader(va, batch_size=cfg.batch_size, num_workers=cfg.num_workers)
