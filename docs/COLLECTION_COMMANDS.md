@@ -33,11 +33,11 @@ Bump `--seed` and `--order` together each pair.
 cd ~/sureshkj/hand-control
 
 # --- run pair 1 ---
-./start_teleop.sh sim anyteleop \
+./start_teleop.sh sim anyteleop --scene robocasa \
     --trial-log baseline_r01 --sequential-spawn --order 1 \
     --spawn-jitter 0.05 --seed 1 --record on
 
-./start_teleop.sh sim contact_aware_w_anyteleop \
+./start_teleop.sh sim contact_aware_w_anyteleop --scene robocasa \
     --trial-log contact_r01 --sequential-spawn --order 1 \
     --spawn-jitter 0.05 --seed 1 --record on
 
@@ -70,6 +70,26 @@ an imbalance there reads as a pipeline difference.
 | `--seed N` | reproducible jitter; vary across runs |
 | `--record on` | overview + wrist MP4, for diagnosing a bad episode later |
 | `--trial-log NAME` | required by `--sequential-spawn`; names the log directory |
+| `--scene robocasa` | **required** — the default `pick_place` scene has only ONE object, so sequential spawn presents it and then has nothing to advance to. All ICRA runs used `robocasa` (4 objects). |
+
+### Confirm on startup
+
+The first lines must say:
+
+```
+[scene] spawning 4 YCB object(s) ... [robocasa]: obj_036_wood_block, obj_017_orange, obj_025_mug, obj_009_gelatin_box
+[sequential-spawn] presenting 4 object(s) one at a time at xy=[...]; 3 stowed.
+[spawn-jitter] this run presents objects at [...]            <- only if the patch is applied
+```
+
+If it says `spawning 1 YCB object(s) ... [pick_place]` you forgot `--scene robocasa`
+and only one object will ever appear. If the `[spawn-jitter]` line is missing, the
+patch in `hand_control_logging.patch` is not in the tree.
+
+`[trial-log] enabled -> logs/NAME/ (mode=dexpilot)` is **cosmetic** for
+`anyteleop` — the retargeter is fine (look for `[AnyTeleop] finger retargeting
+via dex-retargeting`). That label is the lossy method field `handil` already
+works around by reading the directory name.
 
 ## 2. Analyse
 
