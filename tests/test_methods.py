@@ -54,3 +54,24 @@ def test_plain_baselines_round_trip():
 def test_parse_dirname_without_an_event():
     p, r, ab = parse_dirname("contact_aware_w_vwj_upstream_s0p8")
     assert (p, r, ab) == (PIPELINE_CONTACT_AWARE, "vwj_upstream", "s0p8")
+
+
+def test_run_index_suffix_is_stripped():
+    """`anyteleop_r01` must not resolve to a retargeter named 'anyteleop_r01' --
+    that was its own private cell, pairing with nothing."""
+    assert parse_dirname("anyteleop_r01") == (PIPELINE_BASELINE, "anyteleop", None)
+    assert parse_dirname("contact_aware_w_anyteleop_r02") == (
+        PIPELINE_CONTACT_AWARE, "anyteleop", None)
+    # a run index may sit either side of the ablation tag
+    assert parse_dirname("anyteleop_s0p4_r01") == (
+        PIPELINE_BASELINE, "anyteleop", "s0p4")
+    assert parse_dirname("anyteleop_r01_s0p4") == (
+        PIPELINE_BASELINE, "anyteleop", "s0p4")
+
+
+def test_new_runs_pair_with_each_other():
+    a = resolve("anyteleop_r01", "anyteleop")
+    b = resolve("contact_aware_w_anyteleop_r01", "contact_aware_teleop")
+    assert a.key == "baseline+anyteleop"
+    assert b.key == "contact_aware+anyteleop"
+    assert a.base_key != b.base_key and a.retargeter == b.retargeter

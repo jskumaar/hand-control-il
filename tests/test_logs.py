@@ -158,3 +158,31 @@ def test_episode_split_is_deterministic_per_seed():
     c = episode_split(FakeDS(), 0.2, seed=4)
     assert a == b
     assert a != c
+
+
+def test_run_mode_prefers_the_logged_config():
+    """The directory name is a human-chosen string; --mode is authoritative."""
+    from handil.data.logs import run_mode
+    ev = [{"event": "spawn_order", "order": [0, 1]},
+          {"event": "run_config", "mode": "contact_aware_w_anyteleop",
+           "scene": "robocasa", "seed": 1}]
+    mode, from_log = run_mode(ev, "cat_r01")
+    assert mode == "contact_aware_w_anyteleop"
+    assert from_log is True
+
+
+def test_run_mode_falls_back_to_the_directory():
+    from handil.data.logs import run_mode
+    mode, from_log = run_mode([{"event": "trial_start"}], "anyteleop_20260914_225108")
+    assert mode == "anyteleop_20260914_225108"
+    assert from_log is False
+
+
+def test_run_mode_fixes_the_misresolved_name():
+    """Regression: 'cat_r01' used to become retargeter='cat_r01'."""
+    from handil.data.logs import run_mode
+    from handil.data.methods import resolve
+    ev = [{"event": "run_config", "mode": "contact_aware_w_anyteleop"}]
+    mode, _ = run_mode(ev, "cat_r01")
+    m = resolve(mode, "contact_aware_teleop")
+    assert m.key == "contact_aware+anyteleop", m.key
