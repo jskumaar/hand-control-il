@@ -1,6 +1,9 @@
 # Extracted datasets and training outputs — regenerate with scripts/
-data/
-runs/
+# Anchored with a leading slash: a bare `data/` also matches handil/data/, which
+# silently kept the entire data-handling package (schema, extraction, action
+# recovery, method resolution) out of version control.
+/data/
+/runs/
 *.npz
 *.pt
 
