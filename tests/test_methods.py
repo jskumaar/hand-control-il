@@ -75,3 +75,31 @@ def test_new_runs_pair_with_each_other():
     assert a.key == "baseline+anyteleop"
     assert b.key == "contact_aware+anyteleop"
     assert a.base_key != b.base_key and a.retargeter == b.retargeter
+
+
+def test_logged_mode_never_downgrades_the_retargeter():
+    """`run_config.mode` is NORMALISED by hand-control before it is logged:
+    `contact_aware_w_anyteleop` -> `contact_aware_teleop`, with the retargeter
+    moved to a variable the event does not carry. Trusting it blindly relabels
+    every *_w_anyteleop_r0* run as dexpilot, which silently emptied the
+    contact_aware+anyteleop cell for runs r03-r09 while leaving 25 episodes
+    sitting in the manifest under the wrong key."""
+    from handil.data.logs import run_mode
+
+    ca = [{"event": "run_config", "mode": "contact_aware_teleop"}]
+    mode, from_log = run_mode(ca, "contact_aware_w_anyteleop_r03")
+    assert mode == "contact_aware_w_anyteleop_r03" and not from_log
+    assert resolve(mode, "contact_aware_teleop").retargeter == "anyteleop"
+
+    # Same collapse on the baseline side: plain `anyteleop` logs as `dexpilot`
+    # in run_config. The per-trial `method` field is NOT affected (it says
+    # `anyteleop` for every baseline run in the archive), so only run_mode has
+    # to defend against this one.
+    bl = [{"event": "run_config", "mode": "dexpilot"}]
+    mode, from_log = run_mode(bl, "anyteleop_r03")
+    assert mode == "anyteleop_r03" and not from_log
+    assert resolve(mode, "anyteleop").retargeter == "anyteleop"
+
+    # But a genuinely in-house dexpilot run must still read from the log.
+    mode, from_log = run_mode(ca, "contact_aware_teleop")
+    assert mode == "contact_aware_teleop" and from_log

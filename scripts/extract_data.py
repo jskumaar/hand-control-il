@@ -42,6 +42,31 @@ def main() -> int:
                          "logged, so its position target is unrecoverable). "
                          "delta: target minus current position, which removes "
                          "the identity shortcut absolute targets allow.")
+    ap.add_argument("--drop-phases", nargs="*", default=[],
+                    choices=["PLAN", "REACH", "GRASP"],
+                    help="remove rows in these controller phases. PLAN is the "
+                         "RRT-solving hold: in the October runs the direct "
+                         "line to the pregrasp is blocked (route=linear fell "
+                         "79%% -> 0%%), so the planner actually runs and the "
+                         "arm sits still for a median ~8 s, adding ~850 "
+                         "near-zero-action frames of VARYING length per "
+                         "episode. Dropping them separates 'the dead time "
+                         "hurts' from 'the planned paths hurt'. Single-step "
+                         "policies only -- a chunked policy would learn to "
+                         "step across the seam.")
+    ap.add_argument("--collapse-still", type=float, default=0.0, metavar="RAD",
+                    help="drop rows where the robot did not move -- max |dq| "
+                         "over 23 joints below this many radians -- keeping "
+                         "the first --collapse-keep frames of each pause. "
+                         "SEQUENCE-SAFE alternative to --drop-phases: it "
+                         "leaves a continuous trajectory, so BC-RNN and ACT "
+                         "can use it. At 1e-4 it removes 94.6%% of PLAN rows "
+                         "(the RRT-solving hold) but only 13.8%% of REACH and "
+                         "1.0%% of GRASP, so it targets dead time without "
+                         "naming a phase. Try 1e-4.")
+    ap.add_argument("--collapse-keep", type=int, default=1, metavar="N",
+                    help="frames to keep at the start of each stationary run "
+                         "(default 1), so a pause stays visible as a pause.")
     ap.add_argument("--phase-onehot", action="store_true",
                     help="append a 4-d phase one-hot to the observation. OFF by "
                          "default: the real phase machine is stateful (dwell "
@@ -98,6 +123,9 @@ def main() -> int:
                               jnt_limited=jnt_limited,
                               action_space=args.action_space,
                               extras=(("phase_onehot",) if args.phase_onehot else ()),
+                              drop_phases=tuple(args.drop_phases),
+                              collapse_still=args.collapse_still,
+                              collapse_keep=args.collapse_keep,
                               icra_only=not args.all_objects,
                               nominal_only=not args.include_ablations,
                               require_n_objects=(None if args.any_object_count
@@ -117,6 +145,8 @@ def main() -> int:
         "scene": args.scene,
         "schema_version": SCHEMA_VERSION,
         "obs_extras": (["phase_onehot"] if args.phase_onehot else []),
+        "dropped_phases": list(args.drop_phases),
+        "collapse_still": args.collapse_still,
         "action_space": args.action_space,
         "kp_arm": scene.kp_arm.tolist(),
         "episodes": [asdict(m) for m in metas],
