@@ -14,6 +14,23 @@ Kinova Gen3 (7 DOF) + LEAP hand (16 DOF) = 23 DOF, MuJoCo, 500 Hz physics.
 
 ---
 
+## Documents
+
+| | |
+|---|---|
+| [`docs/FULL_ACCOUNT.md`](docs/FULL_ACCOUNT.md) | **Start here for the result.** What prior literature predicted, every hypothesis tried and how each died, the bugs that invalidated earlier numbers, and the final measurements. |
+| [`docs/INTERVIEW_PREP.md`](docs/INTERVIEW_PREP.md) | Deep dive: concepts to know cold, design choices and their justifications, anticipated questions, current state of the art, and where the field is going. |
+| [`docs/SPEAKER_NOTES.md`](docs/SPEAKER_NOTES.md) | ~25 papers with their quantitative claims, plus per-slide talking points and Q&A. |
+| [`docs/SLIDES_FOR_GOOGLE.md`](docs/SLIDES_FOR_GOOGLE.md) | The same material as paste-ready slide blocks. |
+| [`docs/BEFORE_COLLECTING.md`](docs/BEFORE_COLLECTING.md) | What to change in `hand-control` before the next collection session. |
+| [`docs/COLLECTION_COMMANDS.md`](docs/COLLECTION_COMMANDS.md) | Verified command lines for each collection condition. |
+
+**The headline, in one line:** certified grasps raise task success 69% → 94%
+and make the demonstrations 3–10× harder to learn from — and a data-quality
+metric computed before any training predicted that.
+
+---
+
 ## Quick start
 
 ```bash
