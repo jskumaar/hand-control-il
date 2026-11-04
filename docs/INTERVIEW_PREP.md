@@ -227,6 +227,179 @@ closes the objection with a number rather than an argument.
 
 ---
 
+## PART 3b — Implementation details
+
+The level of detail a technical interviewer will drill into. If you built it,
+you should be able to answer these without looking.
+
+### Actions are not logged — they are recovered
+
+The single most consequential implementation fact, and the one most likely to
+be probed. `hand-control` logs state, not commands. The action label is
+reconstructed by inverting the PD law:
+
+```
+target = qpos + (qfrc_applied − qfrc_bias) / kp
+```
+
+- `qfrc_applied − qfrc_bias` isolates the controller's torque from gravity and
+  Coriolis terms.
+- **`kp` is analytic, never fitted** — `diag(M) · ω²` with ω = 30 rad/s,
+  giving `[509.3, 675.5, 254.3, 324.0, 65.9, 65.0, 3.1]` for the arm. An
+  earlier version fitted the gains and was wrong by a factor of 1000.
+- Validated by replaying the recovered actions through the simulator:
+  **0.003 rad drift over 1500 steps**.
+
+**The exception, and why it matters.** During the contact-aware GRASP phase the
+commanded torque is `kp_eff · (q_grasp_hold − qpos) + τ_internal + τ_slip`, and
+neither `q_grasp_hold` nor the time-varying `kp_eff` was logged. Inverting as
+if it were pure PD gives finger targets up to 20 rad. So those rows are
+repaired with `qpos[t+1]` ("follow where the finger actually went"), affecting
+~46% of contact-aware rows — which is exactly the objection the arm/hand split
+answers, since the arm is never repaired.
+
+`action_source` is recorded per episode (`logged_grasp_hold` vs
+`inverted_torque` vs `next_qpos`) so any analysis can filter on it.
+
+### Observation space: 78 dimensions
+
+| Field | Dims | Note |
+|---|---|---|
+| `q_arm`, `q_hand` | 7, 16 | joint positions |
+| `qd_arm`, `qd_hand` | 7, 16 | joint velocities |
+| `obj_in_palm` | 3 | object position **in the palm frame** |
+| `obj_quat_in_palm` | 4 | |
+| `palm_pos`, `palm_quat` | 3, 4 | world pose |
+| `norm_force`, `tan_force` | 4, 4 | per-fingertip normal and tangential |
+| `obj_id_onehot` | 4 | keyed on the object **name** |
+| `obj_size` | 3 | mesh-AABB half-extents |
+| `obj_mass` | 1 | |
+| `height_above_rest` | 1 | stateless task-stage proxy |
+| `hand_touching` | 1 | binary |
+
+Four design decisions behind that table, each with a reason an interviewer can
+challenge:
+
+- **`obj_in_palm` is recomputed, not read.** The trace's own column is filled
+  only for the proximate object during an active trial — all-NaN in 41 of 44
+  ICRA episodes. It is reconstructed from logged world poses as
+  `R_palmᵀ (p_obj − p_palm)`.
+- **`obj_size` uses mesh-AABB half-extents, not `geom_size`.** For the mug,
+  `geom_size` is hull 1 of a 43-hull convex decomposition — a 1.2 cm sliver
+  that would tell the policy the mug is the *smallest* object.
+- **Object identity is in the observation** because a matched-neighbour
+  analysis found only **32%** of baseline nearest neighbours shared the query's
+  object. Without it the policy cannot tell which object it is reaching for.
+- **`phase_onehot` was deliberately dropped.** PLACE is exactly 1 row/episode
+  and 81.5% of those have `|obj_in_palm| > 1 m` (the trial has already torn
+  down); PICK is absent from 115 of 222 episodes because dexpilot-lineage modes
+  advance silently, so its presence encodes the *teleop mode* rather than
+  physics. It is available behind `--phase-onehot` for anyone who wants it.
+
+### Architectures and their hyperparameters
+
+| | Config | Loss |
+|---|---|---|
+| BC-MLP | 512×512 MLP, 1 obs → 1 action | MSE |
+| BC-RNN | 2-layer GRU, hidden 512, **10-frame** obs window, `chunk=1` | MSE |
+| ACT | d_model 256, 8 heads, 4 enc + 4 dec layers, **chunk=16**, latent 32, KL weight 10 | L1 + β·KL |
+| IBC | 512×512×512 energy net, 256 negatives, 3 refine iters | InfoNCE |
+
+**Be precise about BC-RNN**: it has a 10-frame observation *history* but
+`chunk=1`, so it predicts one action. History is not chunking. The difference
+from ACT is three-fold — sequence model vs transformer, 1 action vs 16, and
+deterministic MSE vs a CVAE latent.
+
+**Losses are not comparable across algorithms.** MSE for the BC pair, L1+KL for
+ACT. Only the within-algorithm ratio means anything, which is why every result
+is quoted as a ratio.
+
+### Training protocol
+
+- AdamW, lr 1e-4, weight decay 1e-4, cosine schedule with `T_max = epochs`
+- 60 epochs, batch 256, gradient clipping at norm 1.0
+- **Best validation loss across epochs**, not final — effectively early
+  stopping with a free validation set, applied identically to both arms
+- 8-fold CV over episodes × 6–12 seeds per condition
+
+Actions are z-scored per dimension with **one normaliser fit over both
+conditions pooled**. Per-condition normalisation would rescale each arm by its
+own spread and destroy the comparison — a condition with more variable actions
+would be divided by a larger number and look artificially good.
+
+Scale, for converting results back to physical units: 1 normalised unit ≈
+0.5 rad at median joint scale (arm std 0.28–0.89 rad, hand 0.12–0.71). So
+baseline's 0.0828 MSE is RMSE 0.29 ≈ 0.14 rad ≈ 8° per joint; contact-aware's
+0.689 is RMSE 0.83 ≈ 0.42 rad ≈ 24°. **An RMSE near 1.0 in z-scored units means
+the policy is barely beating the dataset mean** — at 0.69, it extracts only
+~31% of the variance from contact-aware data against ~92% from baseline.
+
+### The action-divergence metric, precisely
+
+```
+for each of 4000 sampled query frames:
+    find k=8 nearest neighbours in NORMALISED observation space,
+        restricted to OTHER episodes
+    divergence = mean |a_neighbour − a_query|, split arm / hand
+```
+
+Three details worth knowing:
+
+- **Cross-episode is the critical restriction.** Within an episode the nearest
+  neighbours of a frame are its temporal neighbours, whose actions differ by
+  one control step (~0.006 rad). That reports `dt`, not disagreement.
+- **Two different spaces.** Neighbour *search* is in z-scored observation
+  space (so newtons, metres and radians are comparable); the divergence *value*
+  is in raw radians, so it reads physically — baseline demos disagree by
+  ~0.20 rad (12°) per arm joint, contact-aware by ~0.43 rad (25°).
+- **The `(H−t)` weighting** implements Belkhale's Theorem 4.1: divergence early
+  in an episode is weighted by time-to-go, because it propagates further.
+
+Robustness checks run: stable across seeds, insensitive to `k` over {4, 8, 16}
+(1.74–1.97× on v3), and with the object mix equalised at 6 per object per arm,
+1.98× ± 0.14 with all 8 bootstrap draws above 1.
+
+### Data pipeline
+
+- One episode = one trial, sliced from `pose_trace.npz` by the trial's
+  **wall-clock** window. Not sim time: that resets to 0 on Backspace and on
+  MuJoCo BADQACC auto-resets, and real runs contain up to 4 such resets.
+- `SCHEMA_VERSION` in the manifest; the loader refuses mismatched shards,
+  because the `.npz` shards are bare float arrays with no self-describing
+  header and a stale one would silently mis-shape every batch.
+- Collection method is resolved from **two** sources: pipeline from the event
+  (authoritative), retargeter from the directory name (the event drops it).
+  Disagreements are surfaced as `method_conflict`, never silently resolved.
+- `collapse_still` removes rows where max |dq| over 23 joints is below 1e-4
+  rad, keeping the first frame of each pause. Selectivity: **94.6% of PLAN,
+  13.8% of REACH, 1.0% of GRASP** — it targets the planner's dead-time hold
+  almost exactly without naming a phase, and leaves a continuous trajectory so
+  chunked and recurrent policies can still use it.
+
+### Environment and evaluation
+
+`PickPlaceEnv` reconstructs the RoboCasa scene with MjSpec surgery. Two fixes
+worth being able to explain:
+
+- **Continuous joints.** Kinova joints 0/2/4/6 are continuous, but the model
+  declares finite ranges. Clamping them to ±π broke replay; setting
+  `jnt_limited = 0` took replay success from 5% to 30%.
+- **The object-index frame bug.** `EpisodeMeta.obj_idx` indexes the log's spawn
+  order; `set_active_object()` indexes `scene.object_bodies`. They differ for
+  3 of 4 objects, so most replays ran against the wrong object. Fixed by
+  addressing objects by **name**; best cell went 31% → 50%.
+
+Rollouts run ≥ 2500 steps: at 400 every policy scores 0%, the first real pick
+appears at 2500, and 4000/6000 are identical.
+
+### Scale of the thing
+
+~5,500 lines across `handil/` and `scripts/`, 93 tests, 36 commits. Four
+algorithms, four evaluation scripts, two deck generators. Roughly 151 episodes
+extracted from 213 run directories.
+
+---
+
 ## PART 4 — Likely questions, and answers
 
 ### On the result
